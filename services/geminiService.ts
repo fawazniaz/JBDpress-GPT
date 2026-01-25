@@ -7,10 +7,12 @@ import { QueryResult, TextbookModule } from '../types';
 
 /**
  * Creates a new instance of the Google GenAI SDK.
- * Always returns a fresh instance to ensure the most up-to-date API key is used right before calls.
  */
 function getAI(): any {
     const key = process.env.API_KEY;
+    if (!key) {
+        console.warn("API Key is missing from environment variables.");
+    }
     return new GoogleGenAI({ apiKey: key });
 }
 
@@ -41,7 +43,7 @@ function handleApiError(err: any, context: string): Error {
     }
 
     if (err.status === 403 || message.includes("API key not valid")) {
-        return new Error("INVALID_KEY: Your API key was rejected. Double-check your Vercel/AI Studio settings.");
+        return new Error("INVALID_KEY: Your API key was rejected. Double-check your Vercel settings.");
     }
 
     if (err instanceof TypeError && (message.includes("fetch") || message.includes("NetworkError"))) {
@@ -124,7 +126,7 @@ export async function uploadToRagStore(ragStoreName: string, file: File): Promis
     if (!op || !op.name) throw new Error("UPLOAD_FAILED: Cloud did not return an operation ID.");
     
     let retries = 0;
-    const maxRetries = 240; // Increased to 20 minutes (240 * 5s)
+    const maxRetries = 300; // Increased to 25 minutes (300 * 5s)
     
     while (retries < maxRetries) {
         await delay(5000); 
@@ -132,7 +134,13 @@ export async function uploadToRagStore(ragStoreName: string, file: File): Promis
             const currentOp = await ai.operations.get({ name: op.name });
             if (currentOp) {
                 op = currentOp;
-                if (op.done) break;
+                // If it's done, we check for errors inside the op object
+                if (op.done) {
+                    if (op.error) {
+                        throw new Error(`Cloud Error: ${op.error.message}`);
+                    }
+                    return; // Success
+                }
             }
             retries++;
         } catch (pollErr: any) {
@@ -141,13 +149,7 @@ export async function uploadToRagStore(ragStoreName: string, file: File): Promis
         }
     }
     
-    if (retries >= maxRetries && !op.done) {
-        throw new Error("INDEXING_TIMEOUT: Indexing is taking longer than expected. The file is uploaded and will appear in your library shortly.");
-    }
-    
-    if (op.error) {
-        throw new Error(`Cloud Error during indexing: ${op.error.message}`);
-    }
+    throw new Error("INDEXING_TIMEOUT: The file has been uploaded, but the cloud is taking a long time to index it. It will appear in your library automatically soon.");
 }
 
 const BASE_GROUNDING_INSTRUCTION = `You are JBDPRESS_GPT, a strict RAG-based Textbook Tutor. 
@@ -161,7 +163,6 @@ export async function fileSearch(
     useFastMode: boolean = false,
     bookFocus?: string
 ): Promise<QueryResult> {
-    // Use gemini-3-flash-preview for high-speed retrieval tasks.
     const model = 'gemini-3-flash-preview';
     let instruction = BASE_GROUNDING_INSTRUCTION;
     if (bookFocus) { instruction += `\n\nFOCUS: Only search in: "${bookFocus}".`; }
