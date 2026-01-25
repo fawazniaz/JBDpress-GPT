@@ -6,8 +6,7 @@ import react from '@vitejs/plugin-react';
 export default defineConfig({
   plugins: [react()],
   define: {
-    // This ensures process.env.API_KEY is available in the client-side bundle
-    // We provide an empty string fallback to prevent syntax errors if not set during build
+    // This ensures process.env.API_KEY is available in the browser bundle
     'process.env.API_KEY': JSON.stringify(process.env.API_KEY || '')
   },
   server: {
@@ -16,6 +15,7 @@ export default defineConfig({
   },
   build: {
     outDir: 'dist',
-    sourcemap: true
+    sourcemap: true,
+    minify: 'terser', // Use terser for more reliable production code
   }
 });

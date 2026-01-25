@@ -8,14 +8,16 @@ import { QueryResult } from '../types';
 
 /**
  * Creates a new instance of the Google GenAI SDK.
- * GUIDELINE: Create a new GoogleGenAI instance right before making an API call 
- * to ensure it always uses the most up-to-date API key from the environment/dialog.
  */
 function getAI() {
     const key = process.env.API_KEY;
-    // We don't throw here, we let the specific call handle the missing key 
-    // to provide better UI feedback in App.tsx
-    return new GoogleGenAI({ apiKey: key || '' });
+    
+    // Check if key is actually set to something useful
+    if (!key || key === '' || key === 'undefined') {
+        throw new Error("API_KEY_MISSING");
+    }
+    
+    return new GoogleGenAI({ apiKey: key });
 }
 
 async function delay(ms: number): Promise<void> {
@@ -27,22 +29,27 @@ async function delay(ms: number): Promise<void> {
  */
 function handleApiError(err: any, context: string): Error {
     console.error(`Gemini API Error [${context}]:`, err);
+    
+    if (err.message === "API_KEY_MISSING") {
+        return new Error("The API Key is missing. Please check your Vercel Environment Variables or Authorize in AI Studio.");
+    }
+
     let message = err.message || "Unknown API error";
     
     if (message.includes("403") || message.includes("permission")) {
-        message = "Permission Denied: Ensure the Generative AI API is enabled in your Google Cloud Project and billing is active.";
+        message = "Permission Denied: Please ensure the 'Generative Language API' is enabled in your Google Cloud Project and billing is active.";
     } else if (message.includes("404") || message.includes("not found")) {
-        message = "Requested entity was not found. Your API key might be invalid or from an unsupported project region.";
+        message = "Requested entity was not found. Your API key might be invalid or your project doesn't have access to this feature.";
     } else if (message.includes("429") || message.includes("quota")) {
-        message = "Quota Exceeded: You have sent too many requests. Please wait a moment.";
+        message = "Quota Exceeded: Too many requests. Please wait a moment.";
     }
     
     return new Error(message);
 }
 
 export async function createRagStore(displayName: string): Promise<string> {
-    const ai = getAI();
     try {
+        const ai = getAI();
         const ragStore = await ai.fileSearchStores.create({ config: { displayName } });
         return ragStore.name || "";
     } catch (err: any) {
@@ -51,8 +58,8 @@ export async function createRagStore(displayName: string): Promise<string> {
 }
 
 export async function uploadToRagStore(ragStoreName: string, file: File): Promise<void> {
-    const ai = getAI();
     try {
+        const ai = getAI();
         let op;
         const uploadFn = () => ai.fileSearchStores.uploadToFileSearchStore({
             fileSearchStoreName: ragStoreName,
@@ -88,7 +95,7 @@ export async function uploadToRagStore(ragStoreName: string, file: File): Promis
         }
         
         if (retries >= maxRetries && !op.done) {
-            throw new Error("Indexing timeout: The file is taking too long to process.");
+            throw new Error("Indexing timeout: The file is taking too long to process on the server.");
         }
         
         if (op.error) {
@@ -101,11 +108,7 @@ export async function uploadToRagStore(ragStoreName: string, file: File): Promis
 
 const BASE_GROUNDING_INSTRUCTION = `You are JBDPRESS_GPT, a strict RAG-based Textbook Tutor. 
 CRITICAL RULE: Answer ONLY using the uploaded textbooks. Do not use outside knowledge.
-If information is missing, say: "I apologize, but this is not in the textbooks."
-
-USER DOWNLOADS & PDFS:
-If a user asks for a download or a document: 
-Do NOT say "I cannot." Instead, say: "I have prepared your document. Please use the Print (🖨️) button next to this message to save as PDF, or the Download (📥) button to save as a text file."`;
+If information is missing, say: "I apologize, but this is not in the textbooks."`;
 
 export async function fileSearch(
     ragStoreName: string, 
@@ -114,7 +117,6 @@ export async function fileSearch(
     useFastMode: boolean = false,
     bookFocus?: string
 ): Promise<QueryResult> {
-    const ai = getAI();
     const model = 'gemini-3-flash-preview';
     
     let instruction = BASE_GROUNDING_INSTRUCTION;
@@ -131,6 +133,7 @@ export async function fileSearch(
     }
 
     try {
+        const ai = getAI();
         const response: GenerateContentResponse = await ai.models.generateContent({
             model: model,
             contents: query,
@@ -150,8 +153,8 @@ export async function fileSearch(
 }
 
 export async function generateExampleQuestions(ragStoreName: string): Promise<string[]> {
-    const ai = getAI();
     try {
+        const ai = getAI();
         const response = await ai.models.generateContent({
             model: 'gemini-3-flash-preview',
             contents: 'List 3 study questions based on these textbooks.',

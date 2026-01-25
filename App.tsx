@@ -48,7 +48,9 @@ const App: React.FC = () => {
             setIsDarkMode(true);
         }
 
+        // Check if API key is injected via build process (standard for Vercel/GitHub deployments)
         if (process.env.API_KEY && process.env.API_KEY !== '' && process.env.API_KEY !== 'undefined') {
+            console.log("Environment API Key detected.");
             setIsApiKeySelected(true);
         }
 
@@ -96,7 +98,9 @@ const App: React.FC = () => {
         // GUIDELINE: If the request fails with "Requested entity was not found.", reset key selection
         if (errMsg.includes("Requested entity was not found") || errMsg.includes("404")) {
             setIsApiKeySelected(false);
-            setTechnicalDetails("The API key provided belongs to a project that was not found or is in an unsupported region. Please select a key from a paid GCP project.");
+            setTechnicalDetails("Project Conflict: The API key provided belongs to a project that was not found or is in an unsupported region. Please select a key from a paid GCP project.");
+        } else if (errMsg.includes("API Key is missing")) {
+            setTechnicalDetails("Configuration Required: The website is live but doesn't have an API_KEY set in Vercel. Go to Vercel -> Project Settings -> Environment Variables and add 'API_KEY'.");
         } else {
             setTechnicalDetails(errMsg);
         }
@@ -106,8 +110,8 @@ const App: React.FC = () => {
     };
 
     const handleUploadTextbooks = async () => {
-        if (!isApiKeySelected && !process.env.API_KEY) {
-            setApiKeyError("Configuration Required: Please select an API key or set the API_KEY environment variable.");
+        if (!isApiKeySelected) {
+            setApiKeyError("No API Access: Please authorize via AI Studio or set the API_KEY environment variable.");
             return;
         }
         if (files.length === 0) return;
@@ -159,7 +163,7 @@ const App: React.FC = () => {
                                 setActiveRagStoreName(mod.storeName);
                                 setChatHistory([]);
                                 setStatus(AppStatus.Chatting);
-                                geminiService.generateExampleQuestions(mod.storeName).then(setExampleQuestions);
+                                geminiService.generateExampleQuestions(mod.storeName).then(setExampleQuestions).catch(() => {});
                             }
                         }}
                         onOpenDashboard={() => setStatus(AppStatus.AdminDashboard)}
@@ -173,7 +177,7 @@ const App: React.FC = () => {
                                 await window.aistudio.openSelectKey(); 
                                 setIsApiKeySelected(true); 
                             } else {
-                                alert("On a real website, please use the Vercel/Cloud dashboard to set your API_KEY.");
+                                alert("Deployment Tip: On a live website, the API_KEY is set in your Vercel/Cloud dashboard environment variables.");
                             }
                         }}
                         toggleDarkMode={toggleDarkMode}
@@ -212,14 +216,15 @@ const App: React.FC = () => {
             case AppStatus.Error:
                  return (
                     <div className="flex flex-col h-screen items-center justify-center p-8 text-center bg-gem-onyx-light dark:bg-gem-onyx-dark transition-colors">
-                        <div className="text-7xl mb-6 grayscale drop-shadow-lg">🛠️</div>
+                        <div className="text-7xl mb-6 grayscale drop-shadow-lg">⚠️</div>
                         <h1 className="text-3xl font-black text-red-500 mb-4">{error}</h1>
-                        <div className="max-w-lg w-full p-6 bg-white dark:bg-gem-slate-dark rounded-3xl border border-red-100 dark:border-red-900/20 shadow-2xl mb-8 overflow-hidden">
+                        <div className="max-w-lg w-full p-8 bg-white dark:bg-gem-slate-dark rounded-3xl border border-red-100 dark:border-red-900/20 shadow-2xl mb-8 overflow-hidden">
                             <p className="text-sm font-bold opacity-80 leading-relaxed text-red-600 dark:text-red-400">
-                                {technicalDetails || "Please check your internet connection and API billing status."}
+                                {technicalDetails || "Please check your internet connection or API billing status."}
                             </p>
-                            <div className="mt-4 pt-4 border-t border-gem-mist-light dark:border-gem-mist-dark text-[10px] opacity-40 font-black uppercase tracking-widest">
-                                Technical Diagnostic ID: {Date.now().toString(36).toUpperCase()}
+                            <div className="mt-6 pt-6 border-t border-gem-mist-light dark:border-gem-mist-dark text-[11px] opacity-60 font-black uppercase tracking-widest flex justify-between items-center">
+                                <span>Deployment Diagnostic</span>
+                                <span className="text-gem-blue">{new Date().toLocaleTimeString()}</span>
                             </div>
                         </div>
                         <div className="flex space-x-4">
@@ -227,7 +232,7 @@ const App: React.FC = () => {
                                 onClick={() => { setStatus(AppStatus.Welcome); setError(null); setTechnicalDetails(null); }} 
                                 className="bg-gem-blue text-white px-10 py-4 rounded-2xl font-black shadow-xl hover:scale-105 active:scale-95 transition-all"
                             >
-                                Return to Library
+                                Back to Library
                             </button>
                             {!isApiKeySelected && (
                                 <button 
