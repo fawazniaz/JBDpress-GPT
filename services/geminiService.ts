@@ -47,13 +47,10 @@ function handleApiError(err: any, context: string): Error {
  */
 export async function listAllModules(): Promise<TextbookModule[]> {
     try {
-        // Use any cast to access fileSearchStores which may not be in standard types
         const ai = new GoogleGenAI({ apiKey: process.env.API_KEY }) as any;
         
-        // Safety check for RAG capability in the current SDK version/environment
         if (!ai.fileSearchStores) {
-            console.warn("fileSearchStores property missing from SDK instance. RAG features may be unavailable.");
-            return [];
+            throw new Error("RAG_UNAVAILABLE: Your current AI SDK version or API key does not support File Search (RAG). Please check your configuration.");
         }
 
         const storesResponse = await withTimeout(
@@ -63,20 +60,25 @@ export async function listAllModules(): Promise<TextbookModule[]> {
         );
 
         const modules: TextbookModule[] = [];
-        const stores = storesResponse.fileSearchStores || [];
+        // Check for both possible response property names (fileSearchStores or stores)
+        // Fix: Explicitly cast storesResponse to any to handle potential unknown type inference in strict environments
+        const stores = (storesResponse as any).fileSearchStores || (storesResponse as any).stores || [];
         
         for (const store of stores) {
             try {
                 const filesResponse = await ai.fileSearchStores.listFilesSearchStoreFiles({
                     fileSearchStoreName: store.name!
                 });
+                const files = filesResponse.fileSearchStoreFiles || filesResponse.files || [];
+                
                 modules.push({
                     name: store.displayName || 'Untitled Module',
                     storeName: store.name!,
-                    books: (filesResponse.fileSearchStoreFiles || []).map((f: any) => f.displayName || 'Unnamed File')
+                    books: files.map((f: any) => f.displayName || 'Unnamed File')
                 });
             } catch (e) {
                 console.warn(`Could not list files for store ${store.name}:`, e);
+                // Still include the store even if files fail to list
                 modules.push({
                     name: store.displayName || 'Untitled Module',
                     storeName: store.name!,
@@ -95,7 +97,6 @@ export async function listAllModules(): Promise<TextbookModule[]> {
  */
 export async function createRagStore(displayName: string): Promise<string> {
     try {
-        // Use any cast to access fileSearchStores which may not be in standard types
         const ai = new GoogleGenAI({ apiKey: process.env.API_KEY }) as any;
         if (!ai.fileSearchStores) throw new Error("RAG stores are not supported by this API key or environment.");
         const ragStore = await ai.fileSearchStores.create({ config: { displayName } });
@@ -109,7 +110,6 @@ export async function createRagStore(displayName: string): Promise<string> {
  * Uploads a file to a RAG store and polls until indexing is complete.
  */
 export async function uploadToRagStore(ragStoreName: string, file: File): Promise<void> {
-    // Use any cast to access fileSearchStores which may not be in standard types
     const ai = new GoogleGenAI({ apiKey: process.env.API_KEY }) as any;
     let op: any;
 
@@ -183,7 +183,6 @@ export async function fileSearch(
             contents: query,
             config: {
                 systemInstruction: instruction,
-                // Cast tools to any because fileSearch tool is not in standard types
                 tools: [{ fileSearch: { fileSearchStoreNames: [ragStoreName] } } as any]
             }
         });
@@ -207,7 +206,6 @@ export async function generateExampleQuestions(ragStoreName: string): Promise<st
             model: 'gemini-3-flash-preview',
             contents: 'List 3 study questions based on these textbooks.',
             config: {
-                // Cast tools to any because fileSearch tool is not in standard types
                 tools: [{ fileSearch: { fileSearchStoreNames: [ragStoreName] } } as any],
                 responseMimeType: 'application/json',
                 responseSchema: {
