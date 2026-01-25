@@ -31,6 +31,7 @@ const App: React.FC = () => {
     const [isApiKeySelected, setIsApiKeySelected] = useState(false);
     const [apiKeyError, setApiKeyError] = useState<string | null>(null);
     const [error, setError] = useState<string | null>(null);
+    const [technicalDetails, setTechnicalDetails] = useState<string | null>(null);
     const [uploadProgress, setUploadProgress] = useState<{ current: number, total: number, message?: string, fileName?: string } | null>(null);
     const [activeRagStoreName, setActiveRagStoreName] = useState<string | null>(null);
     const [chatHistory, setChatHistory] = useState<ChatMessage[]>([]);
@@ -47,7 +48,6 @@ const App: React.FC = () => {
             setIsDarkMode(true);
         }
 
-        // AUTO-DETECT API KEY: On Vercel, process.env.API_KEY will be present
         if (process.env.API_KEY && process.env.API_KEY !== '' && process.env.API_KEY !== 'undefined') {
             setIsApiKeySelected(true);
         }
@@ -89,9 +89,25 @@ const App: React.FC = () => {
         return () => window.removeEventListener('focus', checkApiKey);
     }, [checkApiKey]);
 
+    const handleError = (err: any, customTitle?: string) => {
+        console.error("Application Error:", err);
+        const errMsg = err.message || "An unexpected error occurred.";
+        
+        // GUIDELINE: If the request fails with "Requested entity was not found.", reset key selection
+        if (errMsg.includes("Requested entity was not found") || errMsg.includes("404")) {
+            setIsApiKeySelected(false);
+            setTechnicalDetails("The API key provided belongs to a project that was not found or is in an unsupported region. Please select a key from a paid GCP project.");
+        } else {
+            setTechnicalDetails(errMsg);
+        }
+
+        setError(customTitle || "System Process Failed");
+        setStatus(AppStatus.Error);
+    };
+
     const handleUploadTextbooks = async () => {
         if (!isApiKeySelected && !process.env.API_KEY) {
-            setApiKeyError("Setup Required: Please add your 'API_KEY' in the Vercel/Deployment settings.");
+            setApiKeyError("Configuration Required: Please select an API key or set the API_KEY environment variable.");
             return;
         }
         if (files.length === 0) return;
@@ -99,14 +115,14 @@ const App: React.FC = () => {
         setStatus(AppStatus.Uploading);
         
         try {
-            const moduleLabel = prompt("Name this Library Module (e.g. Physics Grade 9):") || `Textbook Library ${globalTextbooks.length + 1}`;
-            setUploadProgress({ current: 0, total: files.length, message: "Setting up AI workspace...", fileName: "Connecting..." });
+            const moduleLabel = prompt("Module Display Name (e.g. English Literature):") || `Repository ${globalTextbooks.length + 1}`;
+            setUploadProgress({ current: 0, total: files.length, message: "Initializing AI Library...", fileName: "Connecting to Cloud..." });
             
             const ragStoreName = await geminiService.createRagStore(moduleLabel);
             const bookNames = files.map(f => f.name);
             
             for (let i = 0; i < files.length; i++) {
-                setUploadProgress({ current: i + 1, total: files.length, message: "AI reading and memorizing...", fileName: files[i].name });
+                setUploadProgress({ current: i + 1, total: files.length, message: "AI Scanning & Indexing Content...", fileName: files[i].name });
                 await geminiService.uploadToRagStore(ragStoreName, files[i]);
             }
             
@@ -119,9 +135,7 @@ const App: React.FC = () => {
             setFiles([]);
             setStatus(AppStatus.Welcome);
         } catch (err: any) {
-            console.error("Indexing Error:", err);
-            setError(`Upload Error: ${err.message || "Failed to process textbooks."}`);
-            setStatus(AppStatus.Error);
+            handleError(err, "Library Indexing Failed");
         } finally {
             setUploadProgress(null);
         }
@@ -159,7 +173,7 @@ const App: React.FC = () => {
                                 await window.aistudio.openSelectKey(); 
                                 setIsApiKeySelected(true); 
                             } else {
-                                alert("On a real website, the API_KEY is set in the dashboard (Vercel/Google Cloud) environment variables.");
+                                alert("On a real website, please use the Vercel/Cloud dashboard to set your API_KEY.");
                             }
                         }}
                         toggleDarkMode={toggleDarkMode}
@@ -186,8 +200,7 @@ const App: React.FC = () => {
                             const res = await geminiService.fileSearch(activeRagStoreName!, msg, m, f, b);
                             setChatHistory(prev => [...prev, { role: 'model', parts: [{ text: res.text }] }]);
                         } catch (e: any) { 
-                            setError(`Search Error: ${e.message}`); 
-                            setStatus(AppStatus.Error); 
+                            handleError(e, "AI Search Interrupted");
                         } finally { 
                             setIsQueryLoading(false); 
                         }
@@ -198,19 +211,33 @@ const App: React.FC = () => {
                 />;
             case AppStatus.Error:
                  return (
-                    <div className="flex flex-col h-screen items-center justify-center p-8 text-center bg-white dark:bg-gem-onyx-dark transition-colors">
-                        <div className="text-6xl mb-6">⚙️</div>
-                        <h1 className="text-2xl font-black text-red-500 mb-4">Action Required</h1>
-                        <div className="max-w-md p-6 bg-red-50 dark:bg-red-900/10 rounded-3xl border border-red-100 dark:border-red-900/20 mb-8">
-                            <p className="text-sm font-bold opacity-80 leading-relaxed">{error}</p>
-                            <p className="text-[10px] mt-4 opacity-40 uppercase font-black">Troubleshooting: Check Vercel Environment Variables</p>
+                    <div className="flex flex-col h-screen items-center justify-center p-8 text-center bg-gem-onyx-light dark:bg-gem-onyx-dark transition-colors">
+                        <div className="text-7xl mb-6 grayscale drop-shadow-lg">🛠️</div>
+                        <h1 className="text-3xl font-black text-red-500 mb-4">{error}</h1>
+                        <div className="max-w-lg w-full p-6 bg-white dark:bg-gem-slate-dark rounded-3xl border border-red-100 dark:border-red-900/20 shadow-2xl mb-8 overflow-hidden">
+                            <p className="text-sm font-bold opacity-80 leading-relaxed text-red-600 dark:text-red-400">
+                                {technicalDetails || "Please check your internet connection and API billing status."}
+                            </p>
+                            <div className="mt-4 pt-4 border-t border-gem-mist-light dark:border-gem-mist-dark text-[10px] opacity-40 font-black uppercase tracking-widest">
+                                Technical Diagnostic ID: {Date.now().toString(36).toUpperCase()}
+                            </div>
                         </div>
-                        <button 
-                            onClick={() => { setStatus(AppStatus.Welcome); setError(null); }} 
-                            className="bg-gem-blue text-white px-10 py-4 rounded-full font-black shadow-xl hover:scale-105 active:scale-95 transition-all"
-                        >
-                            Back to Library
-                        </button>
+                        <div className="flex space-x-4">
+                            <button 
+                                onClick={() => { setStatus(AppStatus.Welcome); setError(null); setTechnicalDetails(null); }} 
+                                className="bg-gem-blue text-white px-10 py-4 rounded-2xl font-black shadow-xl hover:scale-105 active:scale-95 transition-all"
+                            >
+                                Return to Library
+                            </button>
+                            {!isApiKeySelected && (
+                                <button 
+                                    onClick={async () => { await window.aistudio?.openSelectKey(); setIsApiKeySelected(true); setStatus(AppStatus.Welcome); }} 
+                                    className="bg-gem-teal text-white px-10 py-4 rounded-2xl font-black shadow-xl hover:scale-105 active:scale-95 transition-all"
+                                >
+                                    Select New Key
+                                </button>
+                            )}
+                        </div>
                     </div>
                  );
             default: return null;

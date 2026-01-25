@@ -8,18 +8,36 @@ import { QueryResult } from '../types';
 
 /**
  * Creates a new instance of the Google GenAI SDK.
- * Always creates a fresh instance to catch updated environment variables.
+ * GUIDELINE: Create a new GoogleGenAI instance right before making an API call 
+ * to ensure it always uses the most up-to-date API key from the environment/dialog.
  */
 function getAI() {
     const key = process.env.API_KEY;
-    if (!key || key === 'undefined' || key === '') {
-        throw new Error("Missing API Key. Please go to Vercel Settings -> Environment Variables and add 'API_KEY'.");
-    }
-    return new GoogleGenAI({ apiKey: key });
+    // We don't throw here, we let the specific call handle the missing key 
+    // to provide better UI feedback in App.tsx
+    return new GoogleGenAI({ apiKey: key || '' });
 }
 
 async function delay(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Custom error handler to extract meaningful messages from API responses
+ */
+function handleApiError(err: any, context: string): Error {
+    console.error(`Gemini API Error [${context}]:`, err);
+    let message = err.message || "Unknown API error";
+    
+    if (message.includes("403") || message.includes("permission")) {
+        message = "Permission Denied: Ensure the Generative AI API is enabled in your Google Cloud Project and billing is active.";
+    } else if (message.includes("404") || message.includes("not found")) {
+        message = "Requested entity was not found. Your API key might be invalid or from an unsupported project region.";
+    } else if (message.includes("429") || message.includes("quota")) {
+        message = "Quota Exceeded: You have sent too many requests. Please wait a moment.";
+    }
+    
+    return new Error(message);
 }
 
 export async function createRagStore(displayName: string): Promise<string> {
@@ -28,16 +46,12 @@ export async function createRagStore(displayName: string): Promise<string> {
         const ragStore = await ai.fileSearchStores.create({ config: { displayName } });
         return ragStore.name || "";
     } catch (err: any) {
-        throw new Error(`Connection Error: ${err.message}. Please check your internet or API billing status.`);
+        throw handleApiError(err, "createRagStore");
     }
 }
 
-/**
- * Uploads a textbook file with a patient polling loop to handle server processing time.
- */
 export async function uploadToRagStore(ragStoreName: string, file: File): Promise<void> {
     const ai = getAI();
-    
     try {
         let op;
         const uploadFn = () => ai.fileSearchStores.uploadToFileSearchStore({
@@ -48,9 +62,8 @@ export async function uploadToRagStore(ragStoreName: string, file: File): Promis
         try {
             op = await uploadFn();
         } catch (err: any) {
-            // Retry once if the server is just momentarily busy
             if (err.message?.includes('Deadline') || err.status === 504 || err.status === 429) {
-                await delay(4000);
+                await delay(5000);
                 op = await uploadFn();
             } else {
                 throw err;
@@ -58,7 +71,7 @@ export async function uploadToRagStore(ragStoreName: string, file: File): Promis
         }
         
         let retries = 0;
-        const maxRetries = 150; // Wait up to 7.5 minutes
+        const maxRetries = 150; 
         
         while (!op.done && retries < maxRetries) {
             await delay(3000); 
@@ -66,7 +79,6 @@ export async function uploadToRagStore(ragStoreName: string, file: File): Promis
                 op = await ai.operations.get({ operation: op });
                 retries++;
             } catch (pollErr: any) {
-                // Ignore transient polling timeouts
                 if (pollErr.message?.includes('Deadline') || pollErr.status === 504) {
                     retries++;
                     continue;
@@ -76,14 +88,14 @@ export async function uploadToRagStore(ragStoreName: string, file: File): Promis
         }
         
         if (retries >= maxRetries && !op.done) {
-            throw new Error("Indexing is taking too long. Your file might be very large or the server is busy. Try refreshing.");
+            throw new Error("Indexing timeout: The file is taking too long to process.");
         }
         
         if (op.error) {
             throw new Error(`AI Reading Error: ${op.error.message}`);
         }
     } catch (err: any) {
-        throw new Error(err.message || "Failed to upload textbook.");
+        throw handleApiError(err, "uploadToRagStore");
     }
 }
 
@@ -133,7 +145,7 @@ export async function fileSearch(
             groundingChunks: response.candidates?.[0]?.groundingMetadata?.groundingChunks || [],
         };
     } catch (err: any) {
-        throw new Error(`AI Search Failed: ${err.message}`);
+        throw handleApiError(err, "fileSearch");
     }
 }
 
