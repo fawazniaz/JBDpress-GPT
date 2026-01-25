@@ -1,0 +1,65 @@
+
+<script type="importmap">
+{
+  "imports": {
+    "react/": "https://aistudiocdn.com/react@^19.2.0/",
+    "react": "https://aistudiocdn.com/react@^19.2.0",
+    "react-dom/": "https://aistudiocdn.com/react-dom@^19.2.0/",
+    "@google/genai": "https://esm.sh/@google/genai@^1.29.0"
+  }
+}
+</script>
+
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>JBDPRESS_GPT</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+      tailwind.config = {
+        darkMode: 'class',
+        theme: {
+          extend: {
+            colors: {
+              'gem-onyx': {
+                light: '#f8fafc',
+                dark: '#0f172a'
+              },
+              'gem-slate': {
+                light: '#ffffff',
+                dark: '#1e293b'
+              },
+              'gem-mist': {
+                light: '#e2e8f0',
+                dark: '#334155'
+              },
+              'gem-offwhite': {
+                light: '#1e293b',
+                dark: '#f1f5f9'
+              },
+              'gem-teal': '#0d9488',
+              'gem-blue': '#2563eb',
+            },
+            keyframes: {
+              'progress-stripes': {
+                'from': { backgroundPosition: '1rem 0' },
+                'to': { backgroundPosition: '0 0' },
+              },
+            },
+            animation: {
+              'progress-stripes': 'progress-stripes 1s linear infinite',
+            },
+          }
+        }
+      }
+    </script>
+  
+  <link rel="stylesheet" href="/index.css">
+</head>
+  <body class="bg-gem-onyx-light dark:bg-gem-onyx-dark text-gem-offwhite-light dark:text-gem-offwhite-dark transition-colors duration-300">
+    <div id="root"></div>
+    <script type="module" src="/index.tsx"></script>
+  </body>
+</html>

@@ -1,0 +1,7 @@
+{
+  "name": "JBDPRESS_GPT",
+  "description": "Premium Educational AI for textbook-based learning and teacher resource generation. Features include dark mode, admin controls, and multilingual voice support (English, Urdu, Pashto, Sindhi).",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
