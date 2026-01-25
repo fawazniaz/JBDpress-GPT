@@ -1,3 +1,4 @@
+
 /**
  * @license
  * SPDX-License-Identifier: Apache-2.0
@@ -47,6 +48,7 @@ function handleApiError(err: any, context: string): Error {
  */
 export async function listAllModules(): Promise<TextbookModule[]> {
     try {
+        // Correct initialization with named parameter. Use 'as any' as property is dynamic or custom.
         const ai = new GoogleGenAI({ apiKey: process.env.API_KEY }) as any;
         
         if (!ai.fileSearchStores) {
@@ -54,19 +56,26 @@ export async function listAllModules(): Promise<TextbookModule[]> {
             return [];
         }
 
-        const storesResponse = await withTimeout(
+        // Fix: Explicitly cast the response to any to resolve 'unknown' property access errors.
+        const storesResponse = (await withTimeout(
             ai.fileSearchStores.list(),
             30000,
             "Cloud sync timed out while fetching stores."
-        );
+        )) as any;
 
         const modules: TextbookModule[] = [];
-        const rawStores = (storesResponse as any).fileSearchStores || (storesResponse as any).stores || [];
         
-        // Ensure we handle iterators or arrays correctly from different SDK versions
-        const stores = Array.isArray(rawStores) 
-            ? rawStores 
-            : (rawStores && typeof rawStores[Symbol.iterator] === 'function' ? Array.from(rawStores) : []);
+        // Handle varied response formats (Array vs Object vs Iterator)
+        let stores: any[] = [];
+        if (Array.isArray(storesResponse)) {
+            stores = storesResponse;
+        } else if (storesResponse && storesResponse.fileSearchStores) {
+            stores = storesResponse.fileSearchStores;
+        } else if (storesResponse && storesResponse.stores) {
+            stores = storesResponse.stores;
+        } else if (storesResponse && typeof (storesResponse as any)[Symbol.iterator] === 'function') {
+            stores = Array.from(storesResponse as any);
+        }
         
         if (stores.length === 0) {
             return [];
@@ -74,11 +83,20 @@ export async function listAllModules(): Promise<TextbookModule[]> {
 
         for (const store of stores) {
             try {
-                const filesResponse = await ai.fileSearchStores.listFilesSearchStoreFiles({
+                // Fix: Cast internal file listing response to any to handle unknown properties.
+                const filesResponse = (await ai.fileSearchStores.listFilesSearchStoreFiles({
                     fileSearchStoreName: store.name!
-                });
-                const files = filesResponse.fileSearchStoreFiles || filesResponse.files || [];
+                })) as any;
                 
+                let files: any[] = [];
+                if (Array.isArray(filesResponse)) {
+                    files = filesResponse;
+                } else if (filesResponse && filesResponse.fileSearchStoreFiles) {
+                    files = filesResponse.fileSearchStoreFiles;
+                } else if (filesResponse && filesResponse.files) {
+                    files = filesResponse.files;
+                }
+
                 modules.push({
                     name: store.displayName || 'Untitled Module',
                     storeName: store.name!,
@@ -86,7 +104,6 @@ export async function listAllModules(): Promise<TextbookModule[]> {
                 });
             } catch (e) {
                 console.warn(`Could not list files for store ${store.name}:`, e);
-                // Still include the store shell if listing files fails so user sees the module
                 modules.push({
                     name: store.displayName || 'Untitled Module',
                     storeName: store.name!,
@@ -133,7 +150,7 @@ export async function uploadToRagStore(ragStoreName: string, file: File): Promis
     if (!op || !op.name) throw new Error("UPLOAD_FAILED: Cloud did not return an operation ID.");
     
     let retries = 0;
-    const maxRetries = 180; // 15 minutes
+    const maxRetries = 180; // 15 minutes (180 * 5s)
     
     while (retries < maxRetries) {
         await delay(5000); 

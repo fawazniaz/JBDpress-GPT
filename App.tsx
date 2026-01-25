@@ -81,7 +81,12 @@ const App: React.FC = () => {
             setGlobalTextbooks(modules);
         } catch (err: any) {
             console.error("Cloud Sync Failed:", err);
-            setApiKeyError(`Sync status: ${err.message || 'Connecting...'}`);
+            if (err.message.includes("RESELECTION_REQUIRED")) {
+                setIsApiKeySelected(false);
+                setApiKeyError("Key Expired. Please authorize again.");
+            } else {
+                setApiKeyError(`Sync status: ${err.message || 'Connecting...'}`);
+            }
         } finally {
             setIsLibraryLoading(false);
         }
@@ -121,6 +126,11 @@ const App: React.FC = () => {
             setTechnicalDetails("Success! The upload finished, but the cloud is taking a bit longer to read the book. It will appear in your library automatically in about 5 minutes.");
             setError("Indexing in Progress");
             setStatus(AppStatus.Error);
+            return;
+        } else if (errMsg.includes("RESELECTION_REQUIRED")) {
+            setIsApiKeySelected(false);
+            setApiKeyError("API selection reset required.");
+            setStatus(AppStatus.Welcome);
             return;
         } else {
             setTechnicalDetails(errMsg);
