@@ -11,7 +11,7 @@ import { QueryResult } from '../types';
 function getAI() {
     const key = process.env.API_KEY;
     
-    // Validate that the key exists and isn't just a placeholder string
+    // Validate that the key exists
     if (!key || key === '' || key === 'undefined') {
         throw new Error("API_KEY_MISSING");
     }
@@ -30,17 +30,17 @@ function handleApiError(err: any, context: string): Error {
     console.error(`Gemini API Error [${context}]:`, err);
     
     if (err.message === "API_KEY_MISSING") {
-        return new Error("The API Key is missing. Please go to Vercel -> Project Settings -> Environment Variables and add 'API_KEY'. Then redeploy.");
+        return new Error("MISSING_KEY: Please add 'API_KEY' to Vercel Environment Variables and REDEPLOY.");
     }
 
     let message = err.message || "Unknown API error";
     
     if (message.includes("403") || message.includes("permission")) {
-        message = "Permission Denied: Ensure the 'Generative Language API' is enabled in your Google Cloud Project and billing is active.";
+        message = "PERMISSION_DENIED: 1. Enable 'Generative Language API' in Google Cloud. 2. Attach a Billing Method (RAG requires a paid project).";
     } else if (message.includes("404") || message.includes("not found")) {
-        message = "Requested entity was not found. Check if your API Key is correct and has access to Gemini 3/2.5 models.";
+        message = "NOT_FOUND: The requested feature (File Search) might not be available in your current API project region.";
     } else if (message.includes("429") || message.includes("quota")) {
-        message = "Quota Exceeded: Too many requests. Please wait a moment.";
+        message = "QUOTA_EXCEEDED: Too many requests. Please wait a minute.";
     }
     
     return new Error(message);
@@ -94,11 +94,11 @@ export async function uploadToRagStore(ragStoreName: string, file: File): Promis
         }
         
         if (retries >= maxRetries && !op.done) {
-            throw new Error("Indexing timeout: The file processing is taking longer than expected.");
+            throw new Error("INDEXING_TIMEOUT: The file processing is taking longer than expected. Large PDFs can take several minutes.");
         }
         
         if (op.error) {
-            throw new Error(`AI Reading Error: ${op.error.message}`);
+            throw new Error(`AI_READ_ERROR: ${op.error.message}`);
         }
     } catch (err: any) {
         throw handleApiError(err, "uploadToRagStore");
