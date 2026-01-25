@@ -50,20 +50,28 @@ export async function listAllModules(): Promise<TextbookModule[]> {
         const ai = new GoogleGenAI({ apiKey: process.env.API_KEY }) as any;
         
         if (!ai.fileSearchStores) {
-            throw new Error("RAG_UNAVAILABLE: Your current AI SDK version or API key does not support File Search (RAG). Please check your configuration.");
+            console.warn("RAG features unavailable on current SDK/Key.");
+            return [];
         }
 
         const storesResponse = await withTimeout(
             ai.fileSearchStores.list(),
-            20000,
+            30000,
             "Cloud sync timed out while fetching stores."
         );
 
         const modules: TextbookModule[] = [];
-        // Check for both possible response property names (fileSearchStores or stores)
-        // Fix: Explicitly cast storesResponse to any to handle potential unknown type inference in strict environments
-        const stores = (storesResponse as any).fileSearchStores || (storesResponse as any).stores || [];
+        const rawStores = (storesResponse as any).fileSearchStores || (storesResponse as any).stores || [];
         
+        // Ensure we handle iterators or arrays correctly from different SDK versions
+        const stores = Array.isArray(rawStores) 
+            ? rawStores 
+            : (rawStores && typeof rawStores[Symbol.iterator] === 'function' ? Array.from(rawStores) : []);
+        
+        if (stores.length === 0) {
+            return [];
+        }
+
         for (const store of stores) {
             try {
                 const filesResponse = await ai.fileSearchStores.listFilesSearchStoreFiles({
@@ -78,7 +86,7 @@ export async function listAllModules(): Promise<TextbookModule[]> {
                 });
             } catch (e) {
                 console.warn(`Could not list files for store ${store.name}:`, e);
-                // Still include the store even if files fail to list
+                // Still include the store shell if listing files fails so user sees the module
                 modules.push({
                     name: store.displayName || 'Untitled Module',
                     storeName: store.name!,
@@ -125,7 +133,7 @@ export async function uploadToRagStore(ragStoreName: string, file: File): Promis
     if (!op || !op.name) throw new Error("UPLOAD_FAILED: Cloud did not return an operation ID.");
     
     let retries = 0;
-    const maxRetries = 180; // 15 minutes (180 * 5s) for large indexing tasks
+    const maxRetries = 180; // 15 minutes
     
     while (retries < maxRetries) {
         await delay(5000); 
