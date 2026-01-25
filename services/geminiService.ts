@@ -1,3 +1,4 @@
+
 /**
  * @license
  * SPDX-License-Identifier: Apache-2.0
@@ -7,13 +8,11 @@ import { QueryResult, TextbookModule } from '../types';
 
 /**
  * Creates a new instance of the Google GenAI SDK.
- * Using 'any' return type to allow access to non-standard or undocumented properties like 'fileSearchStores'.
+ * Always returns a fresh instance to ensure the most up-to-date API key is used right before calls.
  */
 function getAI(): any {
+    // Directly use process.env.API_KEY as per guidelines.
     const key = process.env.API_KEY;
-    if (!key || key === '' || key === 'undefined') {
-        throw new Error("API_KEY_NOT_FOUND_IN_BUNDLE");
-    }
     return new GoogleGenAI({ apiKey: key });
 }
 
@@ -34,53 +33,60 @@ async function withTimeout<T>(promise: Promise<T>, ms: number, errorMessage: str
 
 function handleApiError(err: any, context: string): Error {
     console.error(`Gemini API Error [${context}]:`, err);
-    let message = err.message || "Unknown API error";
+    let message = err.message || "Unknown AI error";
+
+    // If the request fails with this message, reset key selection state as per guidelines.
+    if (message.includes("Requested entity was not found.")) {
+        if (typeof window !== 'undefined' && window.aistudio?.openSelectKey) {
+            window.aistudio.openSelectKey();
+        }
+        return new Error("RESELECTION_REQUIRED: The selected API key was not found or is invalid. Please select a valid paid key.");
+    }
+
+    if (err.status === 403 || message.includes("API key not valid")) {
+        return new Error("INVALID_KEY: Your API key was rejected. Double-check your Vercel settings.");
+    }
 
     if (err instanceof TypeError && (message.includes("fetch") || message.includes("NetworkError"))) {
-        return new Error("NETWORK_CONNECTION_ERROR: Connection lost. Large files (50MB) are sensitive to Wi-Fi drops. Please try a more stable connection.");
+        return new Error("NETWORK_ERROR: The connection was interrupted. Large books are sensitive to Wi-Fi quality.");
     }
 
-    if (message === "API_KEY_NOT_FOUND_IN_BUNDLE") {
-        return new Error("MISSING_KEY_ERROR: The API key is not configured in the Vercel deployment.");
+    if (message.includes("undefined") && context.includes("fileSearchStores")) {
+        return new Error("SDK_INCOMPATIBILITY: The current version of the Gemini SDK does not support RAG stores in this environment.");
     }
     
-    if (message.includes("API key not valid") || message.includes("400")) {
-        message = "INVALID_KEY: The API key was rejected. Ensure the LATEST version is deployed on Vercel.";
-    }
-    
-    return new Error(message);
+    return new Error(`${context} failed: ${message}`);
 }
 
 /**
- * Fetches all existing RAG stores and their file contents from the cloud.
+ * Fetches all existing RAG stores from the cloud.
  */
 export async function listAllModules(): Promise<TextbookModule[]> {
     try {
-        const ai = getAI();
-        // Set a 20-second timeout for the initial listing to prevent UI hanging
-        // Property access on 'ai' is now safe because 'getAI()' returns 'any'
+        // Cast ai to any to access fileSearchStores which might not be in the base SDK types.
+        const ai = getAI() as any;
+        if (!ai.fileSearchStores) throw new Error("RAG_NOT_SUPPORTED");
+
+        // Fixed: Cast storesResponse to any to resolve 'unknown' property access errors.
         const storesResponse = await withTimeout(
             ai.fileSearchStores.list(),
             20000,
-            "SYNC_TIMEOUT: Cloud repository is taking too long to respond."
-        );
+            "Cloud sync timed out."
+        ) as any;
 
         const modules: TextbookModule[] = [];
-
         if (storesResponse.fileSearchStores) {
             for (const store of storesResponse.fileSearchStores) {
                 try {
                     const filesResponse = await ai.fileSearchStores.listFilesSearchStoreFiles({
                         fileSearchStoreName: store.name!
                     });
-                    
                     modules.push({
                         name: store.displayName || 'Untitled Module',
                         storeName: store.name!,
-                        books: (filesResponse.fileSearchStoreFiles || []).map(f => f.displayName || 'Unnamed File')
+                        books: (filesResponse.fileSearchStoreFiles || []).map((f: any) => f.displayName || 'Unnamed File')
                     });
                 } catch (e) {
-                    console.warn(`Could not fetch files for store ${store.name}, skipping metadata.`);
                     modules.push({
                         name: store.displayName || 'Untitled Module',
                         storeName: store.name!,
@@ -91,13 +97,16 @@ export async function listAllModules(): Promise<TextbookModule[]> {
         }
         return modules;
     } catch (err: any) {
+        if (err.message === "RAG_NOT_SUPPORTED") return [];
         throw handleApiError(err, "listAllModules");
     }
 }
 
 export async function createRagStore(displayName: string): Promise<string> {
     try {
-        const ai = getAI();
+        // Cast ai to any to access non-standard properties.
+        const ai = getAI() as any;
+        if (!ai.fileSearchStores) throw new Error("RAG stores are not supported by this API key or SDK version.");
         const ragStore = await ai.fileSearchStores.create({ config: { displayName } });
         return ragStore.name || "";
     } catch (err: any) {
@@ -106,52 +115,43 @@ export async function createRagStore(displayName: string): Promise<string> {
 }
 
 export async function uploadToRagStore(ragStoreName: string, file: File): Promise<void> {
-    const ai = getAI();
-    let op;
-    let attempts = 0;
-    const maxAttempts = 3;
+    // Cast ai to any to access non-standard properties.
+    const ai = getAI() as any;
+    let op: any;
 
-    while (attempts < maxAttempts) {
-        try {
-            op = await ai.fileSearchStores.uploadToFileSearchStore({
-                fileSearchStoreName: ragStoreName,
-                file: file
-            });
-            break; 
-        } catch (err: any) {
-            attempts++;
-            if (attempts < maxAttempts) {
-                await delay(3000);
-                continue;
-            }
-            throw handleApiError(err, "uploadToRagStore");
-        }
+    try {
+        op = await ai.fileSearchStores.uploadToFileSearchStore({
+            fileSearchStoreName: ragStoreName,
+            file: file
+        });
+    } catch (err: any) {
+        throw handleApiError(err, "Initial upload");
     }
 
-    if (!op) throw new Error("UPLOAD_FAILED: Connection could not be established.");
+    if (!op || !op.name) throw new Error("UPLOAD_FAILED: Cloud did not return an operation ID.");
     
     let retries = 0;
-    const maxRetries = 150; // ~10 minutes
+    const maxRetries = 120; // 10 minutes
     
     while (!op.done && retries < maxRetries) {
-        await delay(5000); // 5s poll interval is safer for large files
+        await delay(5000); 
         try {
-            op = await ai.operations.get({ operation: op });
+            // Poll using the operation name, casting ai to any to access operations.
+            op = await (ai as any).operations.get({ name: op.name });
             retries++;
         } catch (pollErr: any) {
-            // If polling fails, don't crash, just try again next cycle
-            console.warn("Polling operation status failed, retrying...", pollErr);
+            console.warn("Poll failed, retrying...", pollErr);
             retries++;
             continue;
         }
     }
     
     if (retries >= maxRetries && !op.done) {
-        throw new Error("INDEXING_TIMEOUT: This book is taking very long to index. It may still appear in the library in a few minutes. Please split PDFs over 30MB.");
+        throw new Error("INDEXING_TIMEOUT: The cloud is still processing your book. It will appear in your library automatically in a few minutes.");
     }
     
     if (op.error) {
-        throw new Error(`AI_READ_ERROR: ${op.error.message}`);
+        throw new Error(`Cloud Error: ${op.error.message}`);
     }
 }
 
@@ -166,7 +166,8 @@ export async function fileSearch(
     useFastMode: boolean = false,
     bookFocus?: string
 ): Promise<QueryResult> {
-    const model = 'gemini-3-flash-preview';
+    // Selected gemini-3-pro-preview for complex reasoning/tutor tasks.
+    const model = 'gemini-3-pro-preview';
     let instruction = BASE_GROUNDING_INSTRUCTION;
     if (bookFocus) { instruction += `\n\nFOCUS: Only search in: "${bookFocus}".`; }
     
@@ -185,10 +186,12 @@ export async function fileSearch(
             contents: query,
             config: {
                 systemInstruction: instruction,
-                tools: [{ fileSearch: { fileSearchStoreNames: [ragStoreName] } }]
+                // Cast tools to any as fileSearch is a non-standard tool in this SDK version.
+                tools: [{ fileSearch: { fileSearchStoreNames: [ragStoreName] } } as any]
             }
         });
 
+        // Correctly accessing .text property as per guidelines.
         return {
             text: response.text || "No relevant information found in the library.",
             groundingChunks: response.candidates?.[0]?.groundingMetadata?.groundingChunks || [],
@@ -205,7 +208,7 @@ export async function generateExampleQuestions(ragStoreName: string): Promise<st
             model: 'gemini-3-flash-preview',
             contents: 'List 3 study questions based on these textbooks.',
             config: {
-                tools: [{ fileSearch: { fileSearchStoreNames: [ragStoreName] } }],
+                tools: [{ fileSearch: { fileSearchStoreNames: [ragStoreName] } } as any],
                 responseMimeType: 'application/json',
                 responseSchema: {
                     type: Type.ARRAY,
@@ -213,6 +216,7 @@ export async function generateExampleQuestions(ragStoreName: string): Promise<st
                 }
             }
         });
+        // Accessing .text property directly.
         return JSON.parse(response.text || "[]");
     } catch (err) {
         return ["What are the key goals?", "Summarize the introduction.", "Explain the main theory."];
