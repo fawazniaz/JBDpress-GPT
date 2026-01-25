@@ -7,8 +7,9 @@ import { QueryResult, TextbookModule } from '../types';
 
 /**
  * Creates a new instance of the Google GenAI SDK.
+ * Using 'any' return type to allow access to non-standard or undocumented properties like 'fileSearchStores'.
  */
-function getAI() {
+function getAI(): any {
     const key = process.env.API_KEY;
     if (!key || key === '' || key === 'undefined') {
         throw new Error("API_KEY_NOT_FOUND_IN_BUNDLE");
@@ -20,20 +21,31 @@ async function delay(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/**
+ * Wraps a promise with a timeout
+ */
+async function withTimeout<T>(promise: Promise<T>, ms: number, errorMessage: string): Promise<T> {
+    let timeoutId: any;
+    const timeoutPromise = new Promise<never>((_, reject) => {
+        timeoutId = setTimeout(() => reject(new Error(errorMessage)), ms);
+    });
+    return Promise.race([promise, timeoutPromise]).finally(() => clearTimeout(timeoutId));
+}
+
 function handleApiError(err: any, context: string): Error {
     console.error(`Gemini API Error [${context}]:`, err);
     let message = err.message || "Unknown API error";
 
     if (err instanceof TypeError && (message.includes("fetch") || message.includes("NetworkError"))) {
-        return new Error("NETWORK_CONNECTION_ERROR: The browser lost connection. This is common for files near 50MB. Try a more stable connection or split the PDF.");
+        return new Error("NETWORK_CONNECTION_ERROR: Connection lost. Large files (50MB) are sensitive to Wi-Fi drops. Please try a more stable connection.");
     }
 
     if (message === "API_KEY_NOT_FOUND_IN_BUNDLE") {
-        return new Error("MISSING_KEY_ERROR: The API key is missing. Ensure 'API_KEY' is in Vercel settings and Redeploy.");
+        return new Error("MISSING_KEY_ERROR: The API key is not configured in the Vercel deployment.");
     }
     
     if (message.includes("API key not valid") || message.includes("400")) {
-        message = "INVALID_KEY: The API key was rejected. If you just updated it on Vercel, click 'Redeploy' on the LATEST deployment.";
+        message = "INVALID_KEY: The API key was rejected. Ensure the LATEST version is deployed on Vercel.";
     }
     
     return new Error(message);
@@ -45,22 +57,36 @@ function handleApiError(err: any, context: string): Error {
 export async function listAllModules(): Promise<TextbookModule[]> {
     try {
         const ai = getAI();
-        // List the stores (paged, but we'll take the first page for this implementation)
-        const storesResponse = await ai.fileSearchStores.list();
+        // Set a 20-second timeout for the initial listing to prevent UI hanging
+        // Property access on 'ai' is now safe because 'getAI()' returns 'any'
+        const storesResponse = await withTimeout(
+            ai.fileSearchStores.list(),
+            20000,
+            "SYNC_TIMEOUT: Cloud repository is taking too long to respond."
+        );
+
         const modules: TextbookModule[] = [];
 
         if (storesResponse.fileSearchStores) {
             for (const store of storesResponse.fileSearchStores) {
-                // For each store, list its files to populate the 'books' metadata
-                const filesResponse = await ai.fileSearchStores.listFilesSearchStoreFiles({
-                    fileSearchStoreName: store.name!
-                });
-                
-                modules.push({
-                    name: store.displayName || 'Untitled Module',
-                    storeName: store.name!,
-                    books: (filesResponse.fileSearchStoreFiles || []).map(f => f.displayName || 'Unnamed File')
-                });
+                try {
+                    const filesResponse = await ai.fileSearchStores.listFilesSearchStoreFiles({
+                        fileSearchStoreName: store.name!
+                    });
+                    
+                    modules.push({
+                        name: store.displayName || 'Untitled Module',
+                        storeName: store.name!,
+                        books: (filesResponse.fileSearchStoreFiles || []).map(f => f.displayName || 'Unnamed File')
+                    });
+                } catch (e) {
+                    console.warn(`Could not fetch files for store ${store.name}, skipping metadata.`);
+                    modules.push({
+                        name: store.displayName || 'Untitled Module',
+                        storeName: store.name!,
+                        books: []
+                    });
+                }
             }
         }
         return modules;
@@ -85,20 +111,17 @@ export async function uploadToRagStore(ragStoreName: string, file: File): Promis
     let attempts = 0;
     const maxAttempts = 3;
 
-    const uploadFn = () => ai.fileSearchStores.uploadToFileSearchStore({
-        fileSearchStoreName: ragStoreName,
-        file: file
-    });
-
     while (attempts < maxAttempts) {
         try {
-            op = await uploadFn();
+            op = await ai.fileSearchStores.uploadToFileSearchStore({
+                fileSearchStoreName: ragStoreName,
+                file: file
+            });
             break; 
         } catch (err: any) {
             attempts++;
             if (attempts < maxAttempts) {
-                console.warn(`Upload attempt ${attempts} failed. Retrying in 5s...`);
-                await delay(5000);
+                await delay(3000);
                 continue;
             }
             throw handleApiError(err, "uploadToRagStore");
@@ -108,24 +131,23 @@ export async function uploadToRagStore(ragStoreName: string, file: File): Promis
     if (!op) throw new Error("UPLOAD_FAILED: Connection could not be established.");
     
     let retries = 0;
-    const maxRetries = 300; 
+    const maxRetries = 150; // ~10 minutes
     
     while (!op.done && retries < maxRetries) {
-        await delay(4000);
+        await delay(5000); // 5s poll interval is safer for large files
         try {
             op = await ai.operations.get({ operation: op });
             retries++;
         } catch (pollErr: any) {
-            if (pollErr.status === 504 || pollErr instanceof TypeError) {
-                retries++;
-                continue;
-            }
-            throw handleApiError(pollErr, "pollStatus");
+            // If polling fails, don't crash, just try again next cycle
+            console.warn("Polling operation status failed, retrying...", pollErr);
+            retries++;
+            continue;
         }
     }
     
     if (retries >= maxRetries && !op.done) {
-        throw new Error("INDEXING_TIMEOUT: File is taking too long to process. Large 50MB books should be split into smaller 20MB parts for reliability.");
+        throw new Error("INDEXING_TIMEOUT: This book is taking very long to index. It may still appear in the library in a few minutes. Please split PDFs over 30MB.");
     }
     
     if (op.error) {

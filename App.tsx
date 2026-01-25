@@ -74,12 +74,15 @@ const App: React.FC = () => {
     const fetchLibrary = async () => {
         if (isLibraryLoading) return;
         setIsLibraryLoading(true);
+        setApiKeyError(null);
+        
         try {
             const modules = await geminiService.listAllModules();
             setGlobalTextbooks(modules);
         } catch (err: any) {
             console.error("Cloud Sync Failed:", err);
-            setApiKeyError(`Sync Failed: ${err.message || 'Connection error'}`);
+            // Don't show a blocking error, just log it. The user can manually refresh.
+            setApiKeyError(`Sync status: ${err.message || 'Still connecting to cloud...'}`);
         } finally {
             setIsLibraryLoading(false);
         }
@@ -114,44 +117,43 @@ const App: React.FC = () => {
         const errMsg = err.message || "An unexpected error occurred.";
         
         if (errMsg.includes("NETWORK_CONNECTION_ERROR")) {
-            setTechnicalDetails("Tip: 50MB files are very large for the browser. If this continues, split your PDF into 3 parts (approx 17MB each) and upload them one by one.");
+            setTechnicalDetails("Tip: If the book is over 30MB, split it into smaller parts. Large files often time out on basic Wi-Fi.");
         } else if (errMsg.includes("INDEXING_TIMEOUT")) {
-            setTechnicalDetails("Indexing Delayed: The AI is still reading your heavy book in the background. Please refresh in 5 minutes.");
+            setTechnicalDetails("Success? The upload finished, but indexing is taking longer than expected. Please wait 5 minutes and refresh the library.");
         } else {
             setTechnicalDetails(errMsg);
         }
 
-        setError(customTitle || "System Error");
+        setError(customTitle || "Operation Error");
         setStatus(AppStatus.Error);
     };
 
     const handleUploadTextbooks = async () => {
         if (!isApiKeySelected) {
-            setApiKeyError("API Access Required: Configure Key and Redeploy.");
+            setApiKeyError("API Access Required: Please configure key.");
             return;
         }
         if (files.length === 0) return;
         
         const largeFile = files.find(f => f.size > 25 * 1024 * 1024);
         if (largeFile) {
-            if (!confirm(`Warning: ${largeFile.name} is over 25MB. Large files may time out during indexing. Proceed?`)) return;
+            if (!confirm(`Warning: ${largeFile.name} is quite large. Large files may time out. Proceed?`)) return;
         }
 
         setStatus(AppStatus.Uploading);
         
         try {
-            const moduleLabel = prompt("Module Name (e.g. Grade 1 Computer):") || `Repo ${globalTextbooks.length + 1}`;
-            setUploadProgress({ current: 0, total: files.length, message: "Opening Cloud Connection...", fileName: "Starting..." });
+            const moduleLabel = prompt("Library Folder Name (e.g. Science Grade 2):") || `Module ${globalTextbooks.length + 1}`;
+            setUploadProgress({ current: 0, total: files.length, message: "Connecting to Cloud...", fileName: "Handshake..." });
             
             const ragStoreName = await geminiService.createRagStore(moduleLabel);
-            const bookNames = files.map(f => f.name);
             
             for (let i = 0; i < files.length; i++) {
-                const sizeStr = (files[i].size / (1024 * 1024)).toFixed(1);
+                const mb = (files[i].size / (1024 * 1024)).toFixed(1);
                 setUploadProgress({ 
                     current: i + 1, 
                     total: files.length, 
-                    message: `AI Indexing (${sizeStr} MB)...`, 
+                    message: `Reading Book (${mb} MB)...`, 
                     fileName: files[i].name 
                 });
                 await geminiService.uploadToRagStore(ragStoreName, files[i]);
@@ -161,7 +163,7 @@ const App: React.FC = () => {
             setFiles([]);
             setStatus(AppStatus.Welcome);
         } catch (err: any) {
-            handleError(err, "Library Process Failed");
+            handleError(err, "Upload Failed");
         } finally {
             setUploadProgress(null);
         }
@@ -201,7 +203,7 @@ const App: React.FC = () => {
                                 await window.aistudio.openSelectKey(); 
                                 setIsApiKeySelected(true); 
                             } else {
-                                alert("Manual Key Setup: Configure 'API_KEY' on Vercel and Redeploy.");
+                                alert("API Key: Ensure process.env.API_KEY is correctly set on Vercel.");
                             }
                         }}
                         toggleDarkMode={toggleDarkMode}
@@ -212,7 +214,7 @@ const App: React.FC = () => {
             case AppStatus.AdminDashboard:
                 return <AdminDashboard onClose={() => setStatus(AppStatus.Welcome)} />;
             case AppStatus.Uploading:
-                return <ProgressBar progress={uploadProgress?.current || 0} total={uploadProgress?.total || 1} message={uploadProgress?.message || "Processing..."} fileName={uploadProgress?.fileName} />;
+                return <ProgressBar progress={uploadProgress?.current || 0} total={uploadProgress?.total || 1} message={uploadProgress?.message || "Uploading..."} fileName={uploadProgress?.fileName} />;
             case AppStatus.Chatting:
                 return <ChatInterface 
                     user={user!}
@@ -228,7 +230,7 @@ const App: React.FC = () => {
                             const res = await geminiService.fileSearch(activeRagStoreName!, msg, m, f, b);
                             setChatHistory(prev => [...prev, { role: 'model', parts: [{ text: res.text }] }]);
                         } catch (e: any) { 
-                            handleError(e, "AI Connection Failed");
+                            handleError(e, "Query Failed");
                         } finally { 
                             setIsQueryLoading(false); 
                         }
@@ -239,36 +241,17 @@ const App: React.FC = () => {
                 />;
             case AppStatus.Error:
                  return (
-                    <div className="flex flex-col h-screen items-center justify-center p-8 text-center bg-gem-onyx-light dark:bg-gem-onyx-dark transition-colors">
+                    <div className="flex flex-col h-screen items-center justify-center p-8 text-center bg-gem-onyx-light dark:bg-gem-onyx-dark">
                         <div className="text-7xl mb-6">⚠️</div>
                         <h1 className="text-3xl font-black text-red-500 mb-4">{error}</h1>
-                        <div className="max-w-xl w-full p-10 bg-white dark:bg-gem-slate-dark rounded-[40px] border border-red-100 dark:border-red-900/20 shadow-2xl mb-8">
-                            <div className="text-left space-y-4">
-                                <p className="text-sm font-bold text-red-600 dark:text-red-400">
-                                    {technicalDetails}
-                                </p>
-                                <div className="p-5 bg-gem-onyx-light dark:bg-gem-onyx-dark rounded-3xl border border-gem-mist-light dark:border-gem-mist-dark text-xs opacity-80">
-                                    <p className="font-black uppercase tracking-widest text-gem-blue mb-2 text-[10px]">Large Book Guide:</p>
-                                    <ul className="list-disc pl-5 space-y-1">
-                                        <li>Books over 25MB can struggle on slow Wi-Fi.</li>
-                                        <li><strong>Recommendation:</strong> Use a PDF splitter tool to break the 50MB book into two 25MB parts.</li>
-                                        <li>AI indexing for a 50MB book can take up to 10 minutes.</li>
-                                    </ul>
-                                </div>
-                            </div>
-                        </div>
-                        <div className="flex gap-4">
+                        <div className="max-w-xl p-8 bg-white dark:bg-gem-slate-dark rounded-[30px] shadow-2xl mb-8">
+                            <p className="font-bold text-gem-blue mb-4">Troubleshooting Advice:</p>
+                            <p className="text-sm opacity-70 mb-6">{technicalDetails}</p>
                             <button 
-                                onClick={() => { setStatus(AppStatus.Welcome); setError(null); setTechnicalDetails(null); }} 
-                                className="bg-gem-blue text-white px-10 py-4 rounded-2xl font-black shadow-xl hover:scale-105 active:scale-95 transition-all"
+                                onClick={() => { setStatus(AppStatus.Welcome); setError(null); }} 
+                                className="bg-gem-blue text-white px-8 py-3 rounded-xl font-bold"
                             >
-                                Back to Library
-                            </button>
-                            <button 
-                                onClick={async () => { if(window.aistudio?.openSelectKey) await window.aistudio.openSelectKey(); setIsApiKeySelected(true); setStatus(AppStatus.Welcome); }} 
-                                className="bg-gem-teal text-white px-10 py-4 rounded-2xl font-black shadow-xl hover:scale-105 active:scale-95 transition-all"
-                            >
-                                Select New Key
+                                Try Again
                             </button>
                         </div>
                     </div>
