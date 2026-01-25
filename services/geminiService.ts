@@ -25,17 +25,15 @@ function handleApiError(err: any, context: string): Error {
     let message = err.message || "Unknown API error";
 
     if (err instanceof TypeError && (message.includes("fetch") || message.includes("NetworkError"))) {
-        return new Error("NETWORK_CONNECTION_ERROR: Connection lost during transfer. This often happens with files over 20MB. Try splitting your PDF into smaller parts.");
+        return new Error("NETWORK_CONNECTION_ERROR: The browser lost connection. This is common for files near 50MB. Try a more stable connection or split the PDF.");
     }
 
     if (message === "API_KEY_NOT_FOUND_IN_BUNDLE") {
-        return new Error("MISSING_KEY_ERROR: The API key is missing from the Vercel deployment. Please add it to Environment Variables and REDEPLOY.");
+        return new Error("MISSING_KEY_ERROR: The API key is missing. Ensure 'API_KEY' is in Vercel settings and Redeploy.");
     }
     
     if (message.includes("API key not valid") || message.includes("400")) {
-        message = "INVALID_KEY: The API key was rejected. If you just updated it on Vercel, you MUST click 'Redeploy' for it to take effect.";
-    } else if (message.includes("403") || message.includes("permission")) {
-        message = "PERMISSION_DENIED: RAG features require a Paid Google Cloud Project with billing enabled.";
+        message = "INVALID_KEY: The API key was rejected. If you just updated it on Vercel, click 'Redeploy' on the LATEST deployment.";
     }
     
     return new Error(message);
@@ -65,10 +63,11 @@ export async function uploadToRagStore(ragStoreName: string, file: File): Promis
     while (attempts < maxAttempts) {
         try {
             op = await uploadFn();
-            break;
+            break; 
         } catch (err: any) {
             attempts++;
             if (attempts < maxAttempts) {
+                console.warn(`Upload attempt ${attempts} failed. Retrying in 5s...`);
                 await delay(5000);
                 continue;
             }
@@ -76,10 +75,10 @@ export async function uploadToRagStore(ragStoreName: string, file: File): Promis
         }
     }
 
-    if (!op) throw new Error("UPLOAD_FAILED: Initial transfer failed.");
+    if (!op) throw new Error("UPLOAD_FAILED: Connection could not be established.");
     
     let retries = 0;
-    const maxRetries = 400; // Increased even further for 50MB+ files
+    const maxRetries = 300; // ~20 minutes for heavy 50MB books
     
     while (!op.done && retries < maxRetries) {
         await delay(4000);
@@ -91,12 +90,12 @@ export async function uploadToRagStore(ragStoreName: string, file: File): Promis
                 retries++;
                 continue;
             }
-            throw handleApiError(pollErr, "pollUploadStatus");
+            throw handleApiError(pollErr, "pollStatus");
         }
     }
     
     if (retries >= maxRetries && !op.done) {
-        throw new Error("INDEXING_TIMEOUT: This book is too large for a single session. Please split the PDF and try again.");
+        throw new Error("INDEXING_TIMEOUT: File is taking too long to process. Large 50MB books should be split into smaller 20MB parts for reliability.");
     }
     
     if (op.error) {

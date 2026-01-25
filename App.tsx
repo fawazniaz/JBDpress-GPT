@@ -93,34 +93,34 @@ const App: React.FC = () => {
         const errMsg = err.message || "An unexpected error occurred.";
         
         if (errMsg.includes("NETWORK_CONNECTION_ERROR")) {
-            setTechnicalDetails("Tip: If the file is 50MB+, the connection may drop. Try splitting the PDF into smaller parts (e.g. 15MB each).");
+            setTechnicalDetails("Tip: 50MB files are very large for the browser. If this continues, split your PDF into 3 parts (approx 17MB each) and upload them one by one.");
         } else if (errMsg.includes("INDEXING_TIMEOUT")) {
-            setTechnicalDetails("Large File Alert: The AI is taking a long time to index this book. Please wait 5 minutes and check your library again.");
+            setTechnicalDetails("Indexing Delayed: The AI is still reading your heavy book in the background. Please refresh in 5 minutes.");
         } else {
             setTechnicalDetails(errMsg);
         }
 
-        setError(customTitle || "System Process Failed");
+        setError(customTitle || "System Error");
         setStatus(AppStatus.Error);
     };
 
     const handleUploadTextbooks = async () => {
         if (!isApiKeySelected) {
-            setApiKeyError("No API Access: Set API_KEY and REDEPLOY.");
+            setApiKeyError("API Access Required: Configure Key and Redeploy.");
             return;
         }
         if (files.length === 0) return;
         
-        const hasLargeFile = files.some(f => f.size > 20 * 1024 * 1024);
-        if (hasLargeFile) {
-            if (!confirm("Large file(s) detected (20MB+). Indexing may take 5-10 minutes. Continue?")) return;
+        const largeFile = files.find(f => f.size > 25 * 1024 * 1024);
+        if (largeFile) {
+            if (!confirm(`Warning: ${largeFile.name} is over 25MB. Large files may time out during indexing. Proceed?`)) return;
         }
 
         setStatus(AppStatus.Uploading);
         
         try {
-            const moduleLabel = prompt("Module Name (e.g. Grade 1 Computer):") || `Module ${globalTextbooks.length + 1}`;
-            setUploadProgress({ current: 0, total: files.length, message: "Syncing with AI Cloud...", fileName: "Connecting..." });
+            const moduleLabel = prompt("Module Name (e.g. Grade 1 Computer):") || `Repo ${globalTextbooks.length + 1}`;
+            setUploadProgress({ current: 0, total: files.length, message: "Opening Cloud Connection...", fileName: "Starting..." });
             
             const ragStoreName = await geminiService.createRagStore(moduleLabel);
             const bookNames = files.map(f => f.name);
@@ -145,7 +145,7 @@ const App: React.FC = () => {
             setFiles([]);
             setStatus(AppStatus.Welcome);
         } catch (err: any) {
-            handleError(err, "Library Update Failed");
+            handleError(err, "Library Process Failed");
         } finally {
             setUploadProgress(null);
         }
@@ -183,7 +183,7 @@ const App: React.FC = () => {
                                 await window.aistudio.openSelectKey(); 
                                 setIsApiKeySelected(true); 
                             } else {
-                                alert("Configure API_KEY in Vercel settings and REDEPLOY.");
+                                alert("Manual Key Setup: Configure 'API_KEY' on Vercel and Redeploy.");
                             }
                         }}
                         toggleDarkMode={toggleDarkMode}
@@ -210,7 +210,7 @@ const App: React.FC = () => {
                             const res = await geminiService.fileSearch(activeRagStoreName!, msg, m, f, b);
                             setChatHistory(prev => [...prev, { role: 'model', parts: [{ text: res.text }] }]);
                         } catch (e: any) { 
-                            handleError(e, "AI Search Failed");
+                            handleError(e, "AI Connection Failed");
                         } finally { 
                             setIsQueryLoading(false); 
                         }
@@ -230,21 +230,29 @@ const App: React.FC = () => {
                                     {technicalDetails}
                                 </p>
                                 <div className="p-5 bg-gem-onyx-light dark:bg-gem-onyx-dark rounded-3xl border border-gem-mist-light dark:border-gem-mist-dark text-xs opacity-80">
-                                    <p className="font-black uppercase tracking-widest text-gem-blue mb-2">Large File Tips:</p>
+                                    <p className="font-black uppercase tracking-widest text-gem-blue mb-2 text-[10px]">Large Book Guide:</p>
                                     <ul className="list-disc pl-5 space-y-1">
-                                        <li>Avoid large files (50MB+) on slow Wi-Fi.</li>
-                                        <li><strong>Split PDFs:</strong> Break large books into smaller 15MB files for 100% success.</li>
-                                        <li>AI indexing for big books can take up to 10 minutes.</li>
+                                        <li>Books over 25MB can struggle on slow Wi-Fi.</li>
+                                        <li><strong>Recommendation:</strong> Use a PDF splitter tool to break the 50MB book into two 25MB parts.</li>
+                                        <li>AI indexing for a 50MB book can take up to 10 minutes.</li>
                                     </ul>
                                 </div>
                             </div>
                         </div>
-                        <button 
-                            onClick={() => { setStatus(AppStatus.Welcome); setError(null); setTechnicalDetails(null); }} 
-                            className="bg-gem-blue text-white px-10 py-4 rounded-2xl font-black shadow-xl hover:scale-105 active:scale-95 transition-all"
-                        >
-                            Return to Library
-                        </button>
+                        <div className="flex gap-4">
+                            <button 
+                                onClick={() => { setStatus(AppStatus.Welcome); setError(null); setTechnicalDetails(null); }} 
+                                className="bg-gem-blue text-white px-10 py-4 rounded-2xl font-black shadow-xl hover:scale-105 active:scale-95 transition-all"
+                            >
+                                Back to Library
+                            </button>
+                            <button 
+                                onClick={async () => { if(window.aistudio?.openSelectKey) await window.aistudio.openSelectKey(); setIsApiKeySelected(true); setStatus(AppStatus.Welcome); }} 
+                                className="bg-gem-teal text-white px-10 py-4 rounded-2xl font-black shadow-xl hover:scale-105 active:scale-95 transition-all"
+                            >
+                                Select New Key
+                            </button>
+                        </div>
                     </div>
                  );
             default: return null;
