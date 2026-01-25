@@ -1,4 +1,3 @@
-
 /**
  * @license
  * SPDX-License-Identifier: Apache-2.0
@@ -50,7 +49,6 @@ const App: React.FC = () => {
 
         // Check if API key is injected via build process (standard for Vercel/GitHub deployments)
         if (process.env.API_KEY && process.env.API_KEY !== '' && process.env.API_KEY !== 'undefined') {
-            console.log("Environment API Key detected.");
             setIsApiKeySelected(true);
         }
 
@@ -95,12 +93,12 @@ const App: React.FC = () => {
         console.error("Application Error:", err);
         const errMsg = err.message || "An unexpected error occurred.";
         
-        // GUIDELINE: If the request fails with "Requested entity was not found.", reset key selection
-        if (errMsg.includes("Requested entity was not found") || errMsg.includes("404")) {
+        // Guidance for deployment issues
+        if (errMsg.includes("MISSING_KEY_ERROR") || errMsg.includes("INVALID_KEY") || errMsg.includes("400")) {
+            setTechnicalDetails(errMsg);
+        } else if (errMsg.includes("Requested entity was not found") || errMsg.includes("404")) {
             setIsApiKeySelected(false);
-            setTechnicalDetails("Project Conflict: The API key provided belongs to a project that was not found or is in an unsupported region. Please select a key from a paid GCP project.");
-        } else if (errMsg.includes("API Key is missing")) {
-            setTechnicalDetails("Configuration Required: The website is live but doesn't have an API_KEY set in Vercel. Go to Vercel -> Project Settings -> Environment Variables and add 'API_KEY'.");
+            setTechnicalDetails("Project Conflict: The API key belongs to a project that was not found. Please ensure your project is active and 'Generative Language API' is enabled.");
         } else {
             setTechnicalDetails(errMsg);
         }
@@ -111,7 +109,7 @@ const App: React.FC = () => {
 
     const handleUploadTextbooks = async () => {
         if (!isApiKeySelected) {
-            setApiKeyError("No API Access: Please authorize via AI Studio or set the API_KEY environment variable.");
+            setApiKeyError("No API Access: Please authorize via AI Studio or set the API_KEY environment variable and REDEPLOY.");
             return;
         }
         if (files.length === 0) return;
@@ -119,7 +117,7 @@ const App: React.FC = () => {
         setStatus(AppStatus.Uploading);
         
         try {
-            const moduleLabel = prompt("Module Display Name (e.g. English Literature):") || `Repository ${globalTextbooks.length + 1}`;
+            const moduleLabel = prompt("Module Display Name (e.g. Biology Unit 1):") || `Repository ${globalTextbooks.length + 1}`;
             setUploadProgress({ current: 0, total: files.length, message: "Initializing AI Library...", fileName: "Connecting to Cloud..." });
             
             const ragStoreName = await geminiService.createRagStore(moduleLabel);
@@ -177,7 +175,7 @@ const App: React.FC = () => {
                                 await window.aistudio.openSelectKey(); 
                                 setIsApiKeySelected(true); 
                             } else {
-                                alert("Deployment Tip: On a live website, the API_KEY is set in your Vercel/Cloud dashboard environment variables.");
+                                alert("Manual Setup: On Vercel, set 'API_KEY' in Environment Variables and then trigger a Redeploy.");
                             }
                         }}
                         toggleDarkMode={toggleDarkMode}
@@ -218,30 +216,39 @@ const App: React.FC = () => {
                     <div className="flex flex-col h-screen items-center justify-center p-8 text-center bg-gem-onyx-light dark:bg-gem-onyx-dark transition-colors">
                         <div className="text-7xl mb-6 grayscale drop-shadow-lg">⚠️</div>
                         <h1 className="text-3xl font-black text-red-500 mb-4">{error}</h1>
-                        <div className="max-w-lg w-full p-8 bg-white dark:bg-gem-slate-dark rounded-3xl border border-red-100 dark:border-red-900/20 shadow-2xl mb-8 overflow-hidden">
-                            <p className="text-sm font-bold opacity-80 leading-relaxed text-red-600 dark:text-red-400">
-                                {technicalDetails || "Please check your internet connection or API billing status."}
-                            </p>
-                            <div className="mt-6 pt-6 border-t border-gem-mist-light dark:border-gem-mist-dark text-[11px] opacity-60 font-black uppercase tracking-widest flex justify-between items-center">
+                        <div className="max-w-xl w-full p-10 bg-white dark:bg-gem-slate-dark rounded-[40px] border border-red-100 dark:border-red-900/20 shadow-2xl mb-8 overflow-hidden">
+                            <div className="space-y-4 text-left">
+                                <p className="text-sm font-bold text-red-600 dark:text-red-400">
+                                    {technicalDetails || "Please check your network connection or API quota."}
+                                </p>
+                                
+                                <div className="p-5 bg-gem-onyx-light dark:bg-gem-onyx-dark rounded-3xl border border-gem-mist-light dark:border-gem-mist-dark text-xs space-y-2 opacity-80">
+                                    <p className="font-black text-gem-blue uppercase tracking-widest text-[10px]">Troubleshooting Guide:</p>
+                                    <ul className="list-disc pl-5 space-y-1">
+                                        <li>Verify <strong>API_KEY</strong> in Vercel Environment Variables.</li>
+                                        <li>Ensure <strong>Generative Language API</strong> is enabled in Google Cloud.</li>
+                                        <li><strong>CRITICAL:</strong> If you just added the key, go to the Vercel dashboard and click <strong>"Redeploy"</strong>. Changes to env vars are not applied until the app is rebuilt.</li>
+                                    </ul>
+                                </div>
+                            </div>
+                            <div className="mt-8 pt-6 border-t border-gem-mist-light dark:border-gem-mist-dark text-[11px] opacity-60 font-black uppercase tracking-widest flex justify-between items-center">
                                 <span>Deployment Diagnostic</span>
                                 <span className="text-gem-blue">{new Date().toLocaleTimeString()}</span>
                             </div>
                         </div>
-                        <div className="flex space-x-4">
+                        <div className="flex flex-col sm:flex-row space-y-4 sm:space-y-0 sm:space-x-4">
                             <button 
                                 onClick={() => { setStatus(AppStatus.Welcome); setError(null); setTechnicalDetails(null); }} 
                                 className="bg-gem-blue text-white px-10 py-4 rounded-2xl font-black shadow-xl hover:scale-105 active:scale-95 transition-all"
                             >
                                 Back to Library
                             </button>
-                            {!isApiKeySelected && (
-                                <button 
-                                    onClick={async () => { await window.aistudio?.openSelectKey(); setIsApiKeySelected(true); setStatus(AppStatus.Welcome); }} 
-                                    className="bg-gem-teal text-white px-10 py-4 rounded-2xl font-black shadow-xl hover:scale-105 active:scale-95 transition-all"
-                                >
-                                    Select New Key
-                                </button>
-                            )}
+                            <button 
+                                onClick={async () => { if(window.aistudio?.openSelectKey) await window.aistudio.openSelectKey(); setIsApiKeySelected(true); setStatus(AppStatus.Welcome); }} 
+                                className="bg-gem-teal text-white px-10 py-4 rounded-2xl font-black shadow-xl hover:scale-105 active:scale-95 transition-all"
+                            >
+                                Select New Key
+                            </button>
                         </div>
                     </div>
                  );

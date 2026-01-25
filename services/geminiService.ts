@@ -7,13 +7,14 @@ import { QueryResult } from '../types';
 
 /**
  * Creates a new instance of the Google GenAI SDK.
+ * Note: process.env.API_KEY is injected at BUILD TIME by Vite.
  */
 function getAI() {
     const key = process.env.API_KEY;
     
-    // Validate that the key exists
-    if (!key || key === '' || key === 'undefined') {
-        throw new Error("API_KEY_MISSING");
+    // Explicit validation for injected environment variables
+    if (!key || key === '' || key === 'undefined' || key.length < 5) {
+        throw new Error("API_KEY_NOT_FOUND_IN_BUNDLE");
     }
     
     return new GoogleGenAI({ apiKey: key });
@@ -24,26 +25,26 @@ async function delay(ms: number): Promise<void> {
 }
 
 /**
- * Custom error handler to extract meaningful messages from API responses
+ * Custom error handler to provide actionable instructions for the specific error encountered.
  */
 function handleApiError(err: any, context: string): Error {
     console.error(`Gemini API Error [${context}]:`, err);
     
-    if (err.message === "API_KEY_MISSING") {
-        return new Error("MISSING_KEY: The API_KEY environment variable is not set. Please check your hosting environment (e.g., Vercel) settings.");
-    }
-
     let message = err.message || "Unknown API error";
+
+    if (message === "API_KEY_NOT_FOUND_IN_BUNDLE") {
+        return new Error("MISSING_KEY_ERROR: The API_KEY was not found in the application bundle. 1. Go to Vercel Settings -> Environment Variables. 2. Add 'API_KEY'. 3. IMPORTANT: You MUST Redeploy (Deployments -> Redeploy) for changes to take effect.");
+    }
     
-    // Check for specific 400 error content
+    // Check for specific rejection from Google servers
     if (message.includes("API key not valid") || message.includes("400")) {
-        message = "INVALID_KEY: The API key provided was rejected by Google. Ensure it is correct, has not expired, and has the 'Generative Language API' enabled in the Google Cloud Console.";
+        message = "INVALID_KEY: The API key was rejected by Google. Ensure the 'Generative Language API' is enabled in your Google Cloud Console and that the key is correct. If you just changed it, please trigger a REDEPLOY on Vercel.";
     } else if (message.includes("403") || message.includes("permission")) {
-        message = "PERMISSION_DENIED: Ensure billing is enabled for your project, as RAG features (File Search) may require a paid tier.";
+        message = "PERMISSION_DENIED: Your key is valid, but this feature (RAG/Indexing) requires a Paid Project. Ensure billing is enabled for your Google Cloud project.";
     } else if (message.includes("404") || message.includes("not found")) {
-        message = "NOT_FOUND: The requested feature or project entity was not found. Verify your project setup and region.";
+        message = "NOT_FOUND: The resource was not found. This can happen if the API key belongs to a different project region.";
     } else if (message.includes("429") || message.includes("quota")) {
-        message = "QUOTA_EXCEEDED: You have reached your rate limit. Please wait a moment.";
+        message = "QUOTA_EXCEEDED: Rate limit reached. If this is a new project, ensure billing is active to increase limits.";
     }
     
     return new Error(message);
@@ -71,7 +72,7 @@ export async function uploadToRagStore(ragStoreName: string, file: File): Promis
         try {
             op = await uploadFn();
         } catch (err: any) {
-            // Handle common retryable network errors
+            // Handle common retryable network issues
             if (err.message?.includes('Deadline') || err.status === 504 || err.status === 429) {
                 await delay(5000);
                 op = await uploadFn();
@@ -98,7 +99,7 @@ export async function uploadToRagStore(ragStoreName: string, file: File): Promis
         }
         
         if (retries >= maxRetries && !op.done) {
-            throw new Error("INDEXING_TIMEOUT: File processing is taking longer than expected. Please verify project health.");
+            throw new Error("INDEXING_TIMEOUT: File is taking too long to index. This can happen with very large files or slow API response times.");
         }
         
         if (op.error) {
