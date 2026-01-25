@@ -2,6 +2,7 @@ import React from 'react';
 import { User, TextbookModule } from '../types';
 import UploadCloudIcon from './icons/UploadCloudIcon';
 import TrashIcon from './icons/TrashIcon';
+import RefreshIcon from './icons/RefreshIcon';
 import Spinner from './Spinner';
 
 interface WelcomeScreenProps {
@@ -10,6 +11,8 @@ interface WelcomeScreenProps {
     onEnterChat: (storeName: string, name: string) => void;
     onOpenDashboard: () => void;
     textbooks: TextbookModule[];
+    isLibraryLoading: boolean;
+    onRefreshLibrary: () => void;
     apiKeyError: string | null;
     files: File[];
     setFiles: React.Dispatch<React.SetStateAction<File[]>>;
@@ -21,7 +24,7 @@ interface WelcomeScreenProps {
 }
 
 const WelcomeScreen: React.FC<WelcomeScreenProps> = ({ 
-    user, onUpload, onEnterChat, onOpenDashboard, textbooks, apiKeyError, files, setFiles, isApiKeySelected, onSelectKey, toggleDarkMode, isDarkMode, onLogout 
+    user, onUpload, onEnterChat, onOpenDashboard, textbooks, isLibraryLoading, onRefreshLibrary, apiKeyError, files, setFiles, isApiKeySelected, onSelectKey, toggleDarkMode, isDarkMode, onLogout 
 }) => {
     return (
         <div className="flex flex-col h-screen">
@@ -49,21 +52,37 @@ const WelcomeScreen: React.FC<WelcomeScreenProps> = ({
                     <div className="space-y-8">
                         <div className="flex justify-between items-end">
                             <div>
-                                <h2 className="text-3xl font-black mb-2">The Digital Library</h2>
+                                <h2 className="text-3xl font-black mb-2 flex items-center gap-3">
+                                    The Digital Library
+                                    <button 
+                                        onClick={onRefreshLibrary}
+                                        disabled={isLibraryLoading}
+                                        className={`p-2 rounded-full hover:bg-gem-blue/5 transition-all ${isLibraryLoading ? 'animate-spin' : ''}`}
+                                        title="Refresh Library"
+                                    >
+                                        <RefreshIcon />
+                                    </button>
+                                </h2>
                                 <p className="opacity-60">Select a course module to start studying.</p>
                             </div>
-                            {textbooks.length === 0 && isApiKeySelected && (
+                            {isLibraryLoading && (
                                 <div className="flex items-center space-x-2 text-gem-blue animate-pulse">
                                     <Spinner />
-                                    <span className="text-[10px] font-bold uppercase">Syncing Library...</span>
+                                    <span className="text-[10px] font-bold uppercase">Syncing...</span>
                                 </div>
                             )}
                         </div>
 
                         <div className="grid grid-cols-1 gap-4">
-                            {textbooks.length === 0 ? (
+                            {isLibraryLoading && textbooks.length === 0 ? (
+                                <div className="p-12 border-2 border-dashed border-gem-blue/20 rounded-3xl text-center space-y-4">
+                                    <div className="flex justify-center"><Spinner /></div>
+                                    <p className="text-sm font-bold text-gem-blue">Contacting Cloud Repository...</p>
+                                </div>
+                            ) : textbooks.length === 0 ? (
                                 <div className="p-12 border-2 border-dashed border-gem-mist-light dark:border-gem-mist-dark rounded-3xl text-center opacity-40">
-                                    {isApiKeySelected ? "Synchronizing with Cloud Repository..." : "No textbooks in library yet."}
+                                    <p>No textbooks found in the cloud.</p>
+                                    <p className="text-xs mt-2">Check your API Key or upload new books.</p>
                                 </div>
                             ) : (
                                 textbooks.map((lib, idx) => (
@@ -113,7 +132,11 @@ const WelcomeScreen: React.FC<WelcomeScreenProps> = ({
                                             SYSTEM ONLINE: SECURE ACCESS
                                         </div>
                                     )}
-                                    {apiKeyError && <p className="text-red-500 text-xs">{apiKeyError}</p>}
+                                    {apiKeyError && (
+                                        <div className="p-3 bg-red-500/10 text-red-500 text-[10px] font-bold rounded-lg border border-red-500/20">
+                                            ⚠️ {apiKeyError}
+                                        </div>
+                                    )}
                                 </div>
 
                                 <div className="border-2 border-dashed border-gem-mist-light dark:border-gem-mist-dark rounded-2xl p-8 text-center bg-white/50 dark:bg-black/20">

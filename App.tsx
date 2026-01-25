@@ -65,7 +65,6 @@ const App: React.FC = () => {
         }
     }, []);
 
-    // Sync library from cloud whenever a user is active and key is ready
     useEffect(() => {
         if ((status === AppStatus.Welcome || status === AppStatus.Chatting) && isApiKeySelected && globalTextbooks.length === 0) {
             fetchLibrary();
@@ -73,13 +72,14 @@ const App: React.FC = () => {
     }, [status, isApiKeySelected]);
 
     const fetchLibrary = async () => {
+        if (isLibraryLoading) return;
         setIsLibraryLoading(true);
         try {
             const modules = await geminiService.listAllModules();
             setGlobalTextbooks(modules);
         } catch (err: any) {
             console.error("Cloud Sync Failed:", err);
-            // Non-critical error, user can still try to upload
+            setApiKeyError(`Sync Failed: ${err.message || 'Connection error'}`);
         } finally {
             setIsLibraryLoading(false);
         }
@@ -157,9 +157,7 @@ const App: React.FC = () => {
                 await geminiService.uploadToRagStore(ragStoreName, files[i]);
             }
             
-            // Re-fetch everything to ensure synchronization
             await fetchLibrary();
-            
             setFiles([]);
             setStatus(AppStatus.Welcome);
         } catch (err: any) {
@@ -192,6 +190,8 @@ const App: React.FC = () => {
                         }}
                         onOpenDashboard={() => setStatus(AppStatus.AdminDashboard)}
                         textbooks={globalTextbooks}
+                        isLibraryLoading={isLibraryLoading}
+                        onRefreshLibrary={fetchLibrary}
                         apiKeyError={apiKeyError}
                         files={files}
                         setFiles={setFiles}
