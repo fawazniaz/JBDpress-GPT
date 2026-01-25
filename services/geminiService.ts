@@ -30,17 +30,20 @@ function handleApiError(err: any, context: string): Error {
     console.error(`Gemini API Error [${context}]:`, err);
     
     if (err.message === "API_KEY_MISSING") {
-        return new Error("MISSING_KEY: Please add 'API_KEY' to your Vercel Environment Variables and REDEPLOY the project.");
+        return new Error("MISSING_KEY: The API_KEY environment variable is not set. Please check your hosting environment (e.g., Vercel) settings.");
     }
 
     let message = err.message || "Unknown API error";
     
-    if (message.includes("403") || message.includes("permission")) {
-        message = "PERMISSION_DENIED: 1. Enable 'Generative Language API' in Google Cloud Console. 2. Attach a Billing Method (RAG features require a paid project tier).";
+    // Check for specific 400 error content
+    if (message.includes("API key not valid") || message.includes("400")) {
+        message = "INVALID_KEY: The API key provided was rejected by Google. Ensure it is correct, has not expired, and has the 'Generative Language API' enabled in the Google Cloud Console.";
+    } else if (message.includes("403") || message.includes("permission")) {
+        message = "PERMISSION_DENIED: Ensure billing is enabled for your project, as RAG features (File Search) may require a paid tier.";
     } else if (message.includes("404") || message.includes("not found")) {
-        message = "NOT_FOUND: The requested feature or project entity was not found. Verify your API key and project region settings.";
+        message = "NOT_FOUND: The requested feature or project entity was not found. Verify your project setup and region.";
     } else if (message.includes("429") || message.includes("quota")) {
-        message = "QUOTA_EXCEEDED: Too many requests. Please wait a moment.";
+        message = "QUOTA_EXCEEDED: You have reached your rate limit. Please wait a moment.";
     }
     
     return new Error(message);
@@ -68,6 +71,7 @@ export async function uploadToRagStore(ragStoreName: string, file: File): Promis
         try {
             op = await uploadFn();
         } catch (err: any) {
+            // Handle common retryable network errors
             if (err.message?.includes('Deadline') || err.status === 504 || err.status === 429) {
                 await delay(5000);
                 op = await uploadFn();
@@ -94,7 +98,7 @@ export async function uploadToRagStore(ragStoreName: string, file: File): Promis
         }
         
         if (retries >= maxRetries && !op.done) {
-            throw new Error("INDEXING_TIMEOUT: File processing is taking longer than expected. Please check your Google Cloud Console for indexing status.");
+            throw new Error("INDEXING_TIMEOUT: File processing is taking longer than expected. Please verify project health.");
         }
         
         if (op.error) {
