@@ -1,4 +1,3 @@
-
 /**
  * @license
  * SPDX-License-Identifier: Apache-2.0
@@ -11,7 +10,6 @@ import { QueryResult, TextbookModule } from '../types';
  * Always returns a fresh instance to ensure the most up-to-date API key is used right before calls.
  */
 function getAI(): any {
-    // Directly use process.env.API_KEY as per guidelines.
     const key = process.env.API_KEY;
     return new GoogleGenAI({ apiKey: key });
 }
@@ -35,24 +33,23 @@ function handleApiError(err: any, context: string): Error {
     console.error(`Gemini API Error [${context}]:`, err);
     let message = err.message || "Unknown AI error";
 
-    // If the request fails with this message, reset key selection state as per guidelines.
     if (message.includes("Requested entity was not found.")) {
         if (typeof window !== 'undefined' && window.aistudio?.openSelectKey) {
             window.aistudio.openSelectKey();
         }
-        return new Error("RESELECTION_REQUIRED: The selected API key was not found or is invalid. Please select a valid paid key.");
+        return new Error("RESELECTION_REQUIRED: The selected API key was not found. Please re-select your key.");
     }
 
     if (err.status === 403 || message.includes("API key not valid")) {
-        return new Error("INVALID_KEY: Your API key was rejected. Double-check your Vercel settings.");
+        return new Error("INVALID_KEY: Your API key was rejected. Double-check your Vercel/AI Studio settings.");
     }
 
     if (err instanceof TypeError && (message.includes("fetch") || message.includes("NetworkError"))) {
-        return new Error("NETWORK_ERROR: The connection was interrupted. Large books are sensitive to Wi-Fi quality.");
+        return new Error("NETWORK_ERROR: Connection lost. Large files are sensitive to Wi-Fi interruptions.");
     }
 
     if (message.includes("undefined") && context.includes("fileSearchStores")) {
-        return new Error("SDK_INCOMPATIBILITY: The current version of the Gemini SDK does not support RAG stores in this environment.");
+        return new Error("SDK_INCOMPATIBILITY: RAG features are not supported in this environment.");
     }
     
     return new Error(`${context} failed: ${message}`);
@@ -63,11 +60,9 @@ function handleApiError(err: any, context: string): Error {
  */
 export async function listAllModules(): Promise<TextbookModule[]> {
     try {
-        // Cast ai to any to access fileSearchStores which might not be in the base SDK types.
         const ai = getAI() as any;
         if (!ai.fileSearchStores) throw new Error("RAG_NOT_SUPPORTED");
 
-        // Fixed: Cast storesResponse to any to resolve 'unknown' property access errors.
         const storesResponse = await withTimeout(
             ai.fileSearchStores.list(),
             20000,
@@ -104,9 +99,8 @@ export async function listAllModules(): Promise<TextbookModule[]> {
 
 export async function createRagStore(displayName: string): Promise<string> {
     try {
-        // Cast ai to any to access non-standard properties.
         const ai = getAI() as any;
-        if (!ai.fileSearchStores) throw new Error("RAG stores are not supported by this API key or SDK version.");
+        if (!ai.fileSearchStores) throw new Error("RAG stores not supported.");
         const ragStore = await ai.fileSearchStores.create({ config: { displayName } });
         return ragStore.name || "";
     } catch (err: any) {
@@ -115,7 +109,6 @@ export async function createRagStore(displayName: string): Promise<string> {
 }
 
 export async function uploadToRagStore(ragStoreName: string, file: File): Promise<void> {
-    // Cast ai to any to access non-standard properties.
     const ai = getAI() as any;
     let op: any;
 
@@ -131,27 +124,29 @@ export async function uploadToRagStore(ragStoreName: string, file: File): Promis
     if (!op || !op.name) throw new Error("UPLOAD_FAILED: Cloud did not return an operation ID.");
     
     let retries = 0;
-    const maxRetries = 120; // 10 minutes
+    const maxRetries = 240; // Increased to 20 minutes (240 * 5s)
     
-    while (!op.done && retries < maxRetries) {
+    while (retries < maxRetries) {
         await delay(5000); 
         try {
-            // Poll using the operation name, casting ai to any to access operations.
-            op = await (ai as any).operations.get({ name: op.name });
+            const currentOp = await ai.operations.get({ name: op.name });
+            if (currentOp) {
+                op = currentOp;
+                if (op.done) break;
+            }
             retries++;
         } catch (pollErr: any) {
-            console.warn("Poll failed, retrying...", pollErr);
+            console.warn("Polling operation status failed, retrying...", pollErr);
             retries++;
-            continue;
         }
     }
     
     if (retries >= maxRetries && !op.done) {
-        throw new Error("INDEXING_TIMEOUT: The cloud is still processing your book. It will appear in your library automatically in a few minutes.");
+        throw new Error("INDEXING_TIMEOUT: Indexing is taking longer than expected. The file is uploaded and will appear in your library shortly.");
     }
     
     if (op.error) {
-        throw new Error(`Cloud Error: ${op.error.message}`);
+        throw new Error(`Cloud Error during indexing: ${op.error.message}`);
     }
 }
 
@@ -166,8 +161,8 @@ export async function fileSearch(
     useFastMode: boolean = false,
     bookFocus?: string
 ): Promise<QueryResult> {
-    // Selected gemini-3-pro-preview for complex reasoning/tutor tasks.
-    const model = 'gemini-3-pro-preview';
+    // Use gemini-3-flash-preview for high-speed retrieval tasks.
+    const model = 'gemini-3-flash-preview';
     let instruction = BASE_GROUNDING_INSTRUCTION;
     if (bookFocus) { instruction += `\n\nFOCUS: Only search in: "${bookFocus}".`; }
     
@@ -186,12 +181,10 @@ export async function fileSearch(
             contents: query,
             config: {
                 systemInstruction: instruction,
-                // Cast tools to any as fileSearch is a non-standard tool in this SDK version.
                 tools: [{ fileSearch: { fileSearchStoreNames: [ragStoreName] } } as any]
             }
         });
 
-        // Correctly accessing .text property as per guidelines.
         return {
             text: response.text || "No relevant information found in the library.",
             groundingChunks: response.candidates?.[0]?.groundingMetadata?.groundingChunks || [],
@@ -216,7 +209,6 @@ export async function generateExampleQuestions(ragStoreName: string): Promise<st
                 }
             }
         });
-        // Accessing .text property directly.
         return JSON.parse(response.text || "[]");
     } catch (err) {
         return ["What are the key goals?", "Summarize the introduction.", "Explain the main theory."];

@@ -81,8 +81,7 @@ const App: React.FC = () => {
             setGlobalTextbooks(modules);
         } catch (err: any) {
             console.error("Cloud Sync Failed:", err);
-            // Don't show a blocking error, just log it. The user can manually refresh.
-            setApiKeyError(`Sync status: ${err.message || 'Still connecting to cloud...'}`);
+            setApiKeyError(`Sync status: ${err.message || 'Connecting...'}`);
         } finally {
             setIsLibraryLoading(false);
         }
@@ -116,10 +115,13 @@ const App: React.FC = () => {
         console.error("Application Error:", err);
         const errMsg = err.message || "An unexpected error occurred.";
         
-        if (errMsg.includes("NETWORK_CONNECTION_ERROR")) {
-            setTechnicalDetails("Tip: If the book is over 30MB, split it into smaller parts. Large files often time out on basic Wi-Fi.");
+        if (errMsg.includes("NETWORK_ERROR")) {
+            setTechnicalDetails("Tip: If the book is over 30MB, split it into smaller parts. Wi-Fi drops cause upload failures.");
         } else if (errMsg.includes("INDEXING_TIMEOUT")) {
-            setTechnicalDetails("Success? The upload finished, but indexing is taking longer than expected. Please wait 5 minutes and refresh the library.");
+            setTechnicalDetails("Success! The upload finished, but the cloud is taking a bit longer to read the book. It will appear in your library automatically in about 5 minutes.");
+            setError("Indexing in Progress");
+            setStatus(AppStatus.Error);
+            return;
         } else {
             setTechnicalDetails(errMsg);
         }
@@ -130,21 +132,16 @@ const App: React.FC = () => {
 
     const handleUploadTextbooks = async () => {
         if (!isApiKeySelected) {
-            setApiKeyError("API Access Required: Please configure key.");
+            setApiKeyError("API Key required for upload.");
             return;
         }
         if (files.length === 0) return;
         
-        const largeFile = files.find(f => f.size > 25 * 1024 * 1024);
-        if (largeFile) {
-            if (!confirm(`Warning: ${largeFile.name} is quite large. Large files may time out. Proceed?`)) return;
-        }
-
         setStatus(AppStatus.Uploading);
         
         try {
-            const moduleLabel = prompt("Library Folder Name (e.g. Science Grade 2):") || `Module ${globalTextbooks.length + 1}`;
-            setUploadProgress({ current: 0, total: files.length, message: "Connecting to Cloud...", fileName: "Handshake..." });
+            const moduleLabel = prompt("Library Folder Name:") || `Module ${globalTextbooks.length + 1}`;
+            setUploadProgress({ current: 0, total: files.length, message: "Handshake with Cloud...", fileName: "Starting..." });
             
             const ragStoreName = await geminiService.createRagStore(moduleLabel);
             
@@ -153,7 +150,7 @@ const App: React.FC = () => {
                 setUploadProgress({ 
                     current: i + 1, 
                     total: files.length, 
-                    message: `Reading Book (${mb} MB)...`, 
+                    message: `Cloud Indexing (${mb} MB)...`, 
                     fileName: files[i].name 
                 });
                 await geminiService.uploadToRagStore(ragStoreName, files[i]);
@@ -202,8 +199,6 @@ const App: React.FC = () => {
                             if (window.aistudio?.openSelectKey) {
                                 await window.aistudio.openSelectKey(); 
                                 setIsApiKeySelected(true); 
-                            } else {
-                                alert("API Key: Ensure process.env.API_KEY is correctly set on Vercel.");
                             }
                         }}
                         toggleDarkMode={toggleDarkMode}
@@ -241,17 +236,17 @@ const App: React.FC = () => {
                 />;
             case AppStatus.Error:
                  return (
-                    <div className="flex flex-col h-screen items-center justify-center p-8 text-center bg-gem-onyx-light dark:bg-gem-onyx-dark">
-                        <div className="text-7xl mb-6">⚠️</div>
-                        <h1 className="text-3xl font-black text-red-500 mb-4">{error}</h1>
+                    <div className="flex flex-col h-screen items-center justify-center p-8 text-center bg-gem-onyx-light dark:bg-gem-onyx-dark transition-colors">
+                        <div className="text-7xl mb-6">{error === "Indexing in Progress" ? '⏳' : '⚠️'}</div>
+                        <h1 className={`text-3xl font-black mb-4 ${error === "Indexing in Progress" ? 'text-gem-blue' : 'text-red-500'}`}>{error}</h1>
                         <div className="max-w-xl p-8 bg-white dark:bg-gem-slate-dark rounded-[30px] shadow-2xl mb-8">
-                            <p className="font-bold text-gem-blue mb-4">Troubleshooting Advice:</p>
-                            <p className="text-sm opacity-70 mb-6">{technicalDetails}</p>
+                            <p className="font-bold text-gem-blue mb-4">Status Update:</p>
+                            <p className="text-sm opacity-70 mb-6 leading-relaxed">{technicalDetails}</p>
                             <button 
-                                onClick={() => { setStatus(AppStatus.Welcome); setError(null); }} 
-                                className="bg-gem-blue text-white px-8 py-3 rounded-xl font-bold"
+                                onClick={() => { setStatus(AppStatus.Welcome); setError(null); fetchLibrary(); }} 
+                                className="bg-gem-blue text-white px-10 py-3 rounded-xl font-black shadow-lg hover:scale-105 active:scale-95 transition-all"
                             >
-                                Try Again
+                                {error === "Indexing in Progress" ? 'Back to Library' : 'Try Again'}
                             </button>
                         </div>
                     </div>
