@@ -47,7 +47,6 @@ const App: React.FC = () => {
             setIsDarkMode(true);
         }
 
-        // Check if API key is injected via build process (standard for Vercel/GitHub deployments)
         if (process.env.API_KEY && process.env.API_KEY !== '' && process.env.API_KEY !== 'undefined') {
             setIsApiKeySelected(true);
         }
@@ -93,14 +92,10 @@ const App: React.FC = () => {
         console.error("Application Error:", err);
         const errMsg = err.message || "An unexpected error occurred.";
         
-        // Guidance for deployment or network issues
         if (errMsg.includes("NETWORK_CONNECTION_ERROR")) {
-            setTechnicalDetails("Connection Lost: The browser failed to complete the upload request. This usually happens with weak Wi-Fi or large files.");
-        } else if (errMsg.includes("MISSING_KEY_ERROR") || errMsg.includes("INVALID_KEY") || errMsg.includes("400")) {
-            setTechnicalDetails(errMsg);
-        } else if (errMsg.includes("Requested entity was not found") || errMsg.includes("404")) {
-            setIsApiKeySelected(false);
-            setTechnicalDetails("Project Conflict: The API key belongs to a project that was not found. Please ensure your project is active and 'Generative Language API' is enabled.");
+            setTechnicalDetails("Tip: If the file is 50MB+, the connection may drop. Try splitting the PDF into smaller parts (e.g. 15MB each).");
+        } else if (errMsg.includes("INDEXING_TIMEOUT")) {
+            setTechnicalDetails("Large File Alert: The AI is taking a long time to index this book. Please wait 5 minutes and check your library again.");
         } else {
             setTechnicalDetails(errMsg);
         }
@@ -111,22 +106,33 @@ const App: React.FC = () => {
 
     const handleUploadTextbooks = async () => {
         if (!isApiKeySelected) {
-            setApiKeyError("No API Access: Please set the API_KEY environment variable in Vercel and REDEPLOY.");
+            setApiKeyError("No API Access: Set API_KEY and REDEPLOY.");
             return;
         }
         if (files.length === 0) return;
         
+        const hasLargeFile = files.some(f => f.size > 20 * 1024 * 1024);
+        if (hasLargeFile) {
+            if (!confirm("Large file(s) detected (20MB+). Indexing may take 5-10 minutes. Continue?")) return;
+        }
+
         setStatus(AppStatus.Uploading);
         
         try {
-            const moduleLabel = prompt("Module Display Name (e.g. Biology Unit 1):") || `Repository ${globalTextbooks.length + 1}`;
-            setUploadProgress({ current: 0, total: files.length, message: "Initializing AI Library...", fileName: "Connecting to Cloud..." });
+            const moduleLabel = prompt("Module Name (e.g. Grade 1 Computer):") || `Module ${globalTextbooks.length + 1}`;
+            setUploadProgress({ current: 0, total: files.length, message: "Syncing with AI Cloud...", fileName: "Connecting..." });
             
             const ragStoreName = await geminiService.createRagStore(moduleLabel);
             const bookNames = files.map(f => f.name);
             
             for (let i = 0; i < files.length; i++) {
-                setUploadProgress({ current: i + 1, total: files.length, message: "AI Scanning & Indexing Content...", fileName: files[i].name });
+                const sizeStr = (files[i].size / (1024 * 1024)).toFixed(1);
+                setUploadProgress({ 
+                    current: i + 1, 
+                    total: files.length, 
+                    message: `AI Indexing (${sizeStr} MB)...`, 
+                    fileName: files[i].name 
+                });
                 await geminiService.uploadToRagStore(ragStoreName, files[i]);
             }
             
@@ -139,7 +145,7 @@ const App: React.FC = () => {
             setFiles([]);
             setStatus(AppStatus.Welcome);
         } catch (err: any) {
-            handleError(err, "Library Indexing Failed");
+            handleError(err, "Library Update Failed");
         } finally {
             setUploadProgress(null);
         }
@@ -177,7 +183,7 @@ const App: React.FC = () => {
                                 await window.aistudio.openSelectKey(); 
                                 setIsApiKeySelected(true); 
                             } else {
-                                alert("Manual Setup Required: Go to Vercel project settings, add 'API_KEY' to Environment Variables, and trigger a REDEPLOY.");
+                                alert("Configure API_KEY in Vercel settings and REDEPLOY.");
                             }
                         }}
                         toggleDarkMode={toggleDarkMode}
@@ -192,7 +198,7 @@ const App: React.FC = () => {
             case AppStatus.Chatting:
                 return <ChatInterface 
                     user={user!}
-                    documentName={activeModule?.name || 'Textbook Tutor'}
+                    documentName={activeModule?.name || 'Tutor'}
                     booksInStore={activeModule?.books || []}
                     history={chatHistory}
                     isQueryLoading={isQueryLoading}
@@ -204,7 +210,7 @@ const App: React.FC = () => {
                             const res = await geminiService.fileSearch(activeRagStoreName!, msg, m, f, b);
                             setChatHistory(prev => [...prev, { role: 'model', parts: [{ text: res.text }] }]);
                         } catch (e: any) { 
-                            handleError(e, "AI Search Interrupted");
+                            handleError(e, "AI Search Failed");
                         } finally { 
                             setIsQueryLoading(false); 
                         }
@@ -216,43 +222,29 @@ const App: React.FC = () => {
             case AppStatus.Error:
                  return (
                     <div className="flex flex-col h-screen items-center justify-center p-8 text-center bg-gem-onyx-light dark:bg-gem-onyx-dark transition-colors">
-                        <div className="text-7xl mb-6 grayscale drop-shadow-lg">⚠️</div>
+                        <div className="text-7xl mb-6">⚠️</div>
                         <h1 className="text-3xl font-black text-red-500 mb-4">{error}</h1>
-                        <div className="max-w-xl w-full p-10 bg-white dark:bg-gem-slate-dark rounded-[40px] border border-red-100 dark:border-red-900/20 shadow-2xl mb-8 overflow-hidden">
-                            <div className="space-y-4 text-left">
+                        <div className="max-w-xl w-full p-10 bg-white dark:bg-gem-slate-dark rounded-[40px] border border-red-100 dark:border-red-900/20 shadow-2xl mb-8">
+                            <div className="text-left space-y-4">
                                 <p className="text-sm font-bold text-red-600 dark:text-red-400">
-                                    {technicalDetails || "Please check your network connection or API quota."}
+                                    {technicalDetails}
                                 </p>
-                                
-                                <div className="p-5 bg-gem-onyx-light dark:bg-gem-onyx-dark rounded-3xl border border-gem-mist-light dark:border-gem-mist-dark text-xs space-y-2 opacity-80">
-                                    <p className="font-black text-gem-blue uppercase tracking-widest text-[10px]">Troubleshooting Guide:</p>
+                                <div className="p-5 bg-gem-onyx-light dark:bg-gem-onyx-dark rounded-3xl border border-gem-mist-light dark:border-gem-mist-dark text-xs opacity-80">
+                                    <p className="font-black uppercase tracking-widest text-gem-blue mb-2">Large File Tips:</p>
                                     <ul className="list-disc pl-5 space-y-1">
-                                        <li>Verify your <strong>Internet Connection</strong> is stable.</li>
-                                        <li>Verify <strong>API_KEY</strong> in Vercel Environment Variables.</li>
-                                        <li>Ensure <strong>Generative Language API</strong> is enabled in Google Cloud.</li>
-                                        <li><strong>CRITICAL:</strong> If you just added the key, you must click <strong>"Redeploy"</strong> on Vercel to apply it.</li>
+                                        <li>Avoid large files (50MB+) on slow Wi-Fi.</li>
+                                        <li><strong>Split PDFs:</strong> Break large books into smaller 15MB files for 100% success.</li>
+                                        <li>AI indexing for big books can take up to 10 minutes.</li>
                                     </ul>
                                 </div>
                             </div>
-                            <div className="mt-8 pt-6 border-t border-gem-mist-light dark:border-gem-mist-dark text-[11px] opacity-60 font-black uppercase tracking-widest flex justify-between items-center">
-                                <span>Deployment Diagnostic</span>
-                                <span className="text-gem-blue">{new Date().toLocaleTimeString()}</span>
-                            </div>
                         </div>
-                        <div className="flex gap-4">
-                            <button 
-                                onClick={() => { setStatus(AppStatus.Welcome); setError(null); setTechnicalDetails(null); }} 
-                                className="bg-gem-blue text-white px-10 py-4 rounded-2xl font-black shadow-xl hover:scale-105 active:scale-95 transition-all"
-                            >
-                                Back to Library
-                            </button>
-                            <button 
-                                onClick={async () => { if(window.aistudio?.openSelectKey) await window.aistudio.openSelectKey(); setIsApiKeySelected(true); setStatus(AppStatus.Welcome); }} 
-                                className="bg-gem-teal text-white px-10 py-4 rounded-2xl font-black shadow-xl hover:scale-105 active:scale-95 transition-all"
-                            >
-                                Select New Key
-                            </button>
-                        </div>
+                        <button 
+                            onClick={() => { setStatus(AppStatus.Welcome); setError(null); setTechnicalDetails(null); }} 
+                            className="bg-gem-blue text-white px-10 py-4 rounded-2xl font-black shadow-xl hover:scale-105 active:scale-95 transition-all"
+                        >
+                            Return to Library
+                        </button>
                     </div>
                  );
             default: return null;

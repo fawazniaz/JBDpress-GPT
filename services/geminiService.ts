@@ -7,16 +7,12 @@ import { QueryResult } from '../types';
 
 /**
  * Creates a new instance of the Google GenAI SDK.
- * Note: process.env.API_KEY is injected at BUILD TIME by Vite.
  */
 function getAI() {
     const key = process.env.API_KEY;
-    
-    // Explicit validation for injected environment variables
-    if (!key || key === '' || key === 'undefined' || key.length < 5) {
+    if (!key || key === '' || key === 'undefined') {
         throw new Error("API_KEY_NOT_FOUND_IN_BUNDLE");
     }
-    
     return new GoogleGenAI({ apiKey: key });
 }
 
@@ -24,30 +20,22 @@ async function delay(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-/**
- * Custom error handler to provide actionable instructions for the specific error encountered.
- */
 function handleApiError(err: any, context: string): Error {
     console.error(`Gemini API Error [${context}]:`, err);
-    
     let message = err.message || "Unknown API error";
 
-    // Handle the specific "Failed to fetch" browser error
     if (err instanceof TypeError && (message.includes("fetch") || message.includes("NetworkError"))) {
-        return new Error("NETWORK_CONNECTION_ERROR: The browser lost connection to Google during the upload. Please check your internet stability and try again.");
+        return new Error("NETWORK_CONNECTION_ERROR: Connection lost during large file transfer. Check your internet or try splitting the PDF.");
     }
 
     if (message === "API_KEY_NOT_FOUND_IN_BUNDLE") {
-        return new Error("MISSING_KEY_ERROR: The API_KEY was not found in the application bundle. 1. Go to Vercel Settings -> Environment Variables. 2. Add 'API_KEY'. 3. IMPORTANT: You MUST Redeploy (Deployments -> Redeploy) for changes to take effect.");
+        return new Error("MISSING_KEY_ERROR: API Key missing. Please check Vercel settings and Redeploy.");
     }
     
-    // Check for specific rejection from Google servers
     if (message.includes("API key not valid") || message.includes("400")) {
-        message = "INVALID_KEY: The API key was rejected by Google. Ensure the 'Generative Language API' is enabled in your Google Cloud Console and that the key is correct. If you just changed it, please trigger a REDEPLOY on Vercel.";
+        message = "INVALID_KEY: The API key was rejected. Verify it is correct and the 'Generative Language API' is enabled.";
     } else if (message.includes("403") || message.includes("permission")) {
-        message = "PERMISSION_DENIED: Your key is valid, but this feature (RAG/Indexing) requires a Paid Project. Ensure billing is enabled for your Google Cloud project.";
-    } else if (message.includes("429") || message.includes("quota")) {
-        message = "QUOTA_EXCEEDED: Rate limit reached. If this is a new project, ensure billing is active to increase limits.";
+        message = "PERMISSION_DENIED: File indexing (RAG) requires a Paid Project / Billing enabled.";
     }
     
     return new Error(message);
@@ -69,23 +57,19 @@ export async function uploadToRagStore(ragStoreName: string, file: File): Promis
     let attempts = 0;
     const maxAttempts = 3;
 
+    // A 50MB file is large; ensure the initial fetch doesn't timeout if possible
     const uploadFn = () => ai.fileSearchStores.uploadToFileSearchStore({
         fileSearchStoreName: ragStoreName,
         file: file
     });
 
-    // Outer loop for the initial upload request (handling 'Failed to fetch')
     while (attempts < maxAttempts) {
         try {
             op = await uploadFn();
-            break; // Success, break the retry loop
+            break;
         } catch (err: any) {
             attempts++;
-            const isNetworkError = err instanceof TypeError || err.message?.includes('fetch');
-            const isRetryableStatus = err.status === 504 || err.status === 429 || err.status === 503;
-
-            if ((isNetworkError || isRetryableStatus) && attempts < maxAttempts) {
-                console.warn(`Upload attempt ${attempts} failed. Retrying in 5s...`, err);
+            if (attempts < maxAttempts) {
                 await delay(5000);
                 continue;
             }
@@ -93,20 +77,19 @@ export async function uploadToRagStore(ragStoreName: string, file: File): Promis
         }
     }
 
-    if (!op) throw new Error("UPLOAD_FAILED: Could not initiate upload.");
+    if (!op) throw new Error("UPLOAD_FAILED: Initial transfer failed.");
     
-    // Inner loop for polling the operation status
+    // Polling logic: 50MB files take long to index (chunking/vectorizing)
     let retries = 0;
-    const maxRetries = 150; 
+    const maxRetries = 300; // Increased to 300 (approx 15-20 minutes) for very large files
     
     while (!op.done && retries < maxRetries) {
-        await delay(3000); 
+        await delay(4000); // 4 second intervals
         try {
             op = await ai.operations.get({ operation: op });
             retries++;
         } catch (pollErr: any) {
-            // Be lenient with polling errors, they are often transient
-            if (pollErr.message?.includes('Deadline') || pollErr.status === 504 || pollErr instanceof TypeError) {
+            if (pollErr.status === 504 || pollErr instanceof TypeError) {
                 retries++;
                 continue;
             }
@@ -115,7 +98,7 @@ export async function uploadToRagStore(ragStoreName: string, file: File): Promis
     }
     
     if (retries >= maxRetries && !op.done) {
-        throw new Error("INDEXING_TIMEOUT: File is taking too long to index. Large textbooks can sometimes take several minutes.");
+        throw new Error("INDEXING_TIMEOUT: This book is taking a long time to index. It may still be processing in the background.");
     }
     
     if (op.error) {
@@ -135,11 +118,8 @@ export async function fileSearch(
     bookFocus?: string
 ): Promise<QueryResult> {
     const model = 'gemini-3-flash-preview';
-    
     let instruction = BASE_GROUNDING_INSTRUCTION;
-    if (bookFocus) {
-        instruction += `\n\nFOCUS: Only search in the book: "${bookFocus}".`;
-    }
+    if (bookFocus) { instruction += `\n\nFOCUS: Only search in: "${bookFocus}".`; }
     
     switch(method) {
         case 'blooms': instruction += " Apply Bloom's Taxonomy."; break;
@@ -161,7 +141,7 @@ export async function fileSearch(
         });
 
         return {
-            text: response.text || "I found no relevant information in the library.",
+            text: response.text || "No relevant information found in the library.",
             groundingChunks: response.candidates?.[0]?.groundingMetadata?.groundingChunks || [],
         };
     } catch (err: any) {
@@ -198,7 +178,7 @@ export async function connectLive(callbacks: {
 }, method: string = 'standard'): Promise<any> {
     const ai = getAI();
     return ai.live.connect({
-        model: 'gemini-2.5-flash-native-audio-preview-12-2025',
+        model: 'gemini-native-audio-latest',
         callbacks,
         config: {
             responseModalities: [Modality.AUDIO],
