@@ -35,6 +35,7 @@ const App: React.FC = () => {
     const [activeRagStoreName, setActiveRagStoreName] = useState<string | null>(null);
     const [chatHistory, setChatHistory] = useState<ChatMessage[]>([]);
     const [isQueryLoading, setIsQueryLoading] = useState(false);
+    const [isLibraryLoading, setIsLibraryLoading] = useState(false);
     const [exampleQuestions, setExampleQuestions] = useState<string[]>([]);
     const [activeModule, setActiveModule] = useState<TextbookModule | null>(null);
     const [files, setFiles] = useState<File[]>([]);
@@ -63,6 +64,26 @@ const App: React.FC = () => {
             setTimeout(() => setStatus(AppStatus.Login), 1000);
         }
     }, []);
+
+    // Sync library from cloud whenever a user is active and key is ready
+    useEffect(() => {
+        if ((status === AppStatus.Welcome || status === AppStatus.Chatting) && isApiKeySelected && globalTextbooks.length === 0) {
+            fetchLibrary();
+        }
+    }, [status, isApiKeySelected]);
+
+    const fetchLibrary = async () => {
+        setIsLibraryLoading(true);
+        try {
+            const modules = await geminiService.listAllModules();
+            setGlobalTextbooks(modules);
+        } catch (err: any) {
+            console.error("Cloud Sync Failed:", err);
+            // Non-critical error, user can still try to upload
+        } finally {
+            setIsLibraryLoading(false);
+        }
+    };
 
     const toggleDarkMode = () => {
         setIsDarkMode(prev => {
@@ -136,12 +157,9 @@ const App: React.FC = () => {
                 await geminiService.uploadToRagStore(ragStoreName, files[i]);
             }
             
-            const newLib: TextbookModule = { 
-                name: moduleLabel, 
-                storeName: ragStoreName,
-                books: bookNames
-            };
-            setGlobalTextbooks(prev => [...prev, newLib]);
+            // Re-fetch everything to ensure synchronization
+            await fetchLibrary();
+            
             setFiles([]);
             setStatus(AppStatus.Welcome);
         } catch (err: any) {
@@ -162,7 +180,7 @@ const App: React.FC = () => {
                     <WelcomeScreen 
                         user={user!}
                         onUpload={handleUploadTextbooks}
-                        onEnterChat={(store) => {
+                        onEnterChat={(store, name) => {
                             const mod = globalTextbooks.find(t => t.storeName === store);
                             if (mod) {
                                 setActiveModule(mod);

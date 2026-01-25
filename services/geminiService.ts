@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
 */
 import { GoogleGenAI, GenerateContentResponse, Type, Modality, LiveServerMessage } from "@google/genai";
-import { QueryResult } from '../types';
+import { QueryResult, TextbookModule } from '../types';
 
 /**
  * Creates a new instance of the Google GenAI SDK.
@@ -37,6 +37,36 @@ function handleApiError(err: any, context: string): Error {
     }
     
     return new Error(message);
+}
+
+/**
+ * Fetches all existing RAG stores and their file contents from the cloud.
+ */
+export async function listAllModules(): Promise<TextbookModule[]> {
+    try {
+        const ai = getAI();
+        // List the stores (paged, but we'll take the first page for this implementation)
+        const storesResponse = await ai.fileSearchStores.list();
+        const modules: TextbookModule[] = [];
+
+        if (storesResponse.fileSearchStores) {
+            for (const store of storesResponse.fileSearchStores) {
+                // For each store, list its files to populate the 'books' metadata
+                const filesResponse = await ai.fileSearchStores.listFilesSearchStoreFiles({
+                    fileSearchStoreName: store.name!
+                });
+                
+                modules.push({
+                    name: store.displayName || 'Untitled Module',
+                    storeName: store.name!,
+                    books: (filesResponse.fileSearchStoreFiles || []).map(f => f.displayName || 'Unnamed File')
+                });
+            }
+        }
+        return modules;
+    } catch (err: any) {
+        throw handleApiError(err, "listAllModules");
+    }
 }
 
 export async function createRagStore(displayName: string): Promise<string> {
@@ -78,7 +108,7 @@ export async function uploadToRagStore(ragStoreName: string, file: File): Promis
     if (!op) throw new Error("UPLOAD_FAILED: Connection could not be established.");
     
     let retries = 0;
-    const maxRetries = 300; // ~20 minutes for heavy 50MB books
+    const maxRetries = 300; 
     
     while (!op.done && retries < maxRetries) {
         await delay(4000);

@@ -1,8 +1,8 @@
-
 import React from 'react';
 import { User, TextbookModule } from '../types';
 import UploadCloudIcon from './icons/UploadCloudIcon';
 import TrashIcon from './icons/TrashIcon';
+import Spinner from './Spinner';
 
 interface WelcomeScreenProps {
     user: User;
@@ -47,15 +47,23 @@ const WelcomeScreen: React.FC<WelcomeScreenProps> = ({
                     
                     {/* Left Panel: Library & Management */}
                     <div className="space-y-8">
-                        <div>
-                            <h2 className="text-3xl font-black mb-2">The Digital Library</h2>
-                            <p className="opacity-60">Select a course module to start studying.</p>
+                        <div className="flex justify-between items-end">
+                            <div>
+                                <h2 className="text-3xl font-black mb-2">The Digital Library</h2>
+                                <p className="opacity-60">Select a course module to start studying.</p>
+                            </div>
+                            {textbooks.length === 0 && isApiKeySelected && (
+                                <div className="flex items-center space-x-2 text-gem-blue animate-pulse">
+                                    <Spinner />
+                                    <span className="text-[10px] font-bold uppercase">Syncing Library...</span>
+                                </div>
+                            )}
                         </div>
 
                         <div className="grid grid-cols-1 gap-4">
                             {textbooks.length === 0 ? (
                                 <div className="p-12 border-2 border-dashed border-gem-mist-light dark:border-gem-mist-dark rounded-3xl text-center opacity-40">
-                                    No textbooks in library yet.
+                                    {isApiKeySelected ? "Synchronizing with Cloud Repository..." : "No textbooks in library yet."}
                                 </div>
                             ) : (
                                 textbooks.map((lib, idx) => (
