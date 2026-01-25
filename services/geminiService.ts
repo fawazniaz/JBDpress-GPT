@@ -25,17 +25,17 @@ function handleApiError(err: any, context: string): Error {
     let message = err.message || "Unknown API error";
 
     if (err instanceof TypeError && (message.includes("fetch") || message.includes("NetworkError"))) {
-        return new Error("NETWORK_CONNECTION_ERROR: Connection lost during large file transfer. Check your internet or try splitting the PDF.");
+        return new Error("NETWORK_CONNECTION_ERROR: Connection lost during transfer. This often happens with files over 20MB. Try splitting your PDF into smaller parts.");
     }
 
     if (message === "API_KEY_NOT_FOUND_IN_BUNDLE") {
-        return new Error("MISSING_KEY_ERROR: API Key missing. Please check Vercel settings and Redeploy.");
+        return new Error("MISSING_KEY_ERROR: The API key is missing from the Vercel deployment. Please add it to Environment Variables and REDEPLOY.");
     }
     
     if (message.includes("API key not valid") || message.includes("400")) {
-        message = "INVALID_KEY: The API key was rejected. Verify it is correct and the 'Generative Language API' is enabled.";
+        message = "INVALID_KEY: The API key was rejected. If you just updated it on Vercel, you MUST click 'Redeploy' for it to take effect.";
     } else if (message.includes("403") || message.includes("permission")) {
-        message = "PERMISSION_DENIED: File indexing (RAG) requires a Paid Project / Billing enabled.";
+        message = "PERMISSION_DENIED: RAG features require a Paid Google Cloud Project with billing enabled.";
     }
     
     return new Error(message);
@@ -57,7 +57,6 @@ export async function uploadToRagStore(ragStoreName: string, file: File): Promis
     let attempts = 0;
     const maxAttempts = 3;
 
-    // A 50MB file is large; ensure the initial fetch doesn't timeout if possible
     const uploadFn = () => ai.fileSearchStores.uploadToFileSearchStore({
         fileSearchStoreName: ragStoreName,
         file: file
@@ -79,12 +78,11 @@ export async function uploadToRagStore(ragStoreName: string, file: File): Promis
 
     if (!op) throw new Error("UPLOAD_FAILED: Initial transfer failed.");
     
-    // Polling logic: 50MB files take long to index (chunking/vectorizing)
     let retries = 0;
-    const maxRetries = 300; // Increased to 300 (approx 15-20 minutes) for very large files
+    const maxRetries = 400; // Increased even further for 50MB+ files
     
     while (!op.done && retries < maxRetries) {
-        await delay(4000); // 4 second intervals
+        await delay(4000);
         try {
             op = await ai.operations.get({ operation: op });
             retries++;
@@ -98,7 +96,7 @@ export async function uploadToRagStore(ragStoreName: string, file: File): Promis
     }
     
     if (retries >= maxRetries && !op.done) {
-        throw new Error("INDEXING_TIMEOUT: This book is taking a long time to index. It may still be processing in the background.");
+        throw new Error("INDEXING_TIMEOUT: This book is too large for a single session. Please split the PDF and try again.");
     }
     
     if (op.error) {
@@ -178,7 +176,7 @@ export async function connectLive(callbacks: {
 }, method: string = 'standard'): Promise<any> {
     const ai = getAI();
     return ai.live.connect({
-        model: 'gemini-native-audio-latest',
+        model: 'gemini-2.5-flash-native-audio-preview-12-2025',
         callbacks,
         config: {
             responseModalities: [Modality.AUDIO],
