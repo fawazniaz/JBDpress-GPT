@@ -93,8 +93,10 @@ const App: React.FC = () => {
         console.error("Application Error:", err);
         const errMsg = err.message || "An unexpected error occurred.";
         
-        // Guidance for deployment issues
-        if (errMsg.includes("MISSING_KEY_ERROR") || errMsg.includes("INVALID_KEY") || errMsg.includes("400")) {
+        // Guidance for deployment or network issues
+        if (errMsg.includes("NETWORK_CONNECTION_ERROR")) {
+            setTechnicalDetails("Connection Lost: The browser failed to complete the upload request. This usually happens with weak Wi-Fi or large files.");
+        } else if (errMsg.includes("MISSING_KEY_ERROR") || errMsg.includes("INVALID_KEY") || errMsg.includes("400")) {
             setTechnicalDetails(errMsg);
         } else if (errMsg.includes("Requested entity was not found") || errMsg.includes("404")) {
             setIsApiKeySelected(false);
@@ -109,7 +111,7 @@ const App: React.FC = () => {
 
     const handleUploadTextbooks = async () => {
         if (!isApiKeySelected) {
-            setApiKeyError("No API Access: Please authorize via AI Studio or set the API_KEY environment variable and REDEPLOY.");
+            setApiKeyError("No API Access: Please set the API_KEY environment variable in Vercel and REDEPLOY.");
             return;
         }
         if (files.length === 0) return;
@@ -175,7 +177,7 @@ const App: React.FC = () => {
                                 await window.aistudio.openSelectKey(); 
                                 setIsApiKeySelected(true); 
                             } else {
-                                alert("Manual Setup: On Vercel, set 'API_KEY' in Environment Variables and then trigger a Redeploy.");
+                                alert("Manual Setup Required: Go to Vercel project settings, add 'API_KEY' to Environment Variables, and trigger a REDEPLOY.");
                             }
                         }}
                         toggleDarkMode={toggleDarkMode}
@@ -225,9 +227,10 @@ const App: React.FC = () => {
                                 <div className="p-5 bg-gem-onyx-light dark:bg-gem-onyx-dark rounded-3xl border border-gem-mist-light dark:border-gem-mist-dark text-xs space-y-2 opacity-80">
                                     <p className="font-black text-gem-blue uppercase tracking-widest text-[10px]">Troubleshooting Guide:</p>
                                     <ul className="list-disc pl-5 space-y-1">
+                                        <li>Verify your <strong>Internet Connection</strong> is stable.</li>
                                         <li>Verify <strong>API_KEY</strong> in Vercel Environment Variables.</li>
                                         <li>Ensure <strong>Generative Language API</strong> is enabled in Google Cloud.</li>
-                                        <li><strong>CRITICAL:</strong> If you just added the key, go to the Vercel dashboard and click <strong>"Redeploy"</strong>. Changes to env vars are not applied until the app is rebuilt.</li>
+                                        <li><strong>CRITICAL:</strong> If you just added the key, you must click <strong>"Redeploy"</strong> on Vercel to apply it.</li>
                                     </ul>
                                 </div>
                             </div>
@@ -236,7 +239,7 @@ const App: React.FC = () => {
                                 <span className="text-gem-blue">{new Date().toLocaleTimeString()}</span>
                             </div>
                         </div>
-                        <div className="flex flex-col sm:flex-row space-y-4 sm:space-y-0 sm:space-x-4">
+                        <div className="flex gap-4">
                             <button 
                                 onClick={() => { setStatus(AppStatus.Welcome); setError(null); setTechnicalDetails(null); }} 
                                 className="bg-gem-blue text-white px-10 py-4 rounded-2xl font-black shadow-xl hover:scale-105 active:scale-95 transition-all"

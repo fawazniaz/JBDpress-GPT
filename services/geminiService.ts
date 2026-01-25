@@ -32,6 +32,11 @@ function handleApiError(err: any, context: string): Error {
     
     let message = err.message || "Unknown API error";
 
+    // Handle the specific "Failed to fetch" browser error
+    if (err instanceof TypeError && (message.includes("fetch") || message.includes("NetworkError"))) {
+        return new Error("NETWORK_CONNECTION_ERROR: The browser lost connection to Google during the upload. Please check your internet stability and try again.");
+    }
+
     if (message === "API_KEY_NOT_FOUND_IN_BUNDLE") {
         return new Error("MISSING_KEY_ERROR: The API_KEY was not found in the application bundle. 1. Go to Vercel Settings -> Environment Variables. 2. Add 'API_KEY'. 3. IMPORTANT: You MUST Redeploy (Deployments -> Redeploy) for changes to take effect.");
     }
@@ -41,8 +46,6 @@ function handleApiError(err: any, context: string): Error {
         message = "INVALID_KEY: The API key was rejected by Google. Ensure the 'Generative Language API' is enabled in your Google Cloud Console and that the key is correct. If you just changed it, please trigger a REDEPLOY on Vercel.";
     } else if (message.includes("403") || message.includes("permission")) {
         message = "PERMISSION_DENIED: Your key is valid, but this feature (RAG/Indexing) requires a Paid Project. Ensure billing is enabled for your Google Cloud project.";
-    } else if (message.includes("404") || message.includes("not found")) {
-        message = "NOT_FOUND: The resource was not found. This can happen if the API key belongs to a different project region.";
     } else if (message.includes("429") || message.includes("quota")) {
         message = "QUOTA_EXCEEDED: Rate limit reached. If this is a new project, ensure billing is active to increase limits.";
     }
@@ -61,52 +64,62 @@ export async function createRagStore(displayName: string): Promise<string> {
 }
 
 export async function uploadToRagStore(ragStoreName: string, file: File): Promise<void> {
-    try {
-        const ai = getAI();
-        let op;
-        const uploadFn = () => ai.fileSearchStores.uploadToFileSearchStore({
-            fileSearchStoreName: ragStoreName,
-            file: file
-        });
+    const ai = getAI();
+    let op;
+    let attempts = 0;
+    const maxAttempts = 3;
 
+    const uploadFn = () => ai.fileSearchStores.uploadToFileSearchStore({
+        fileSearchStoreName: ragStoreName,
+        file: file
+    });
+
+    // Outer loop for the initial upload request (handling 'Failed to fetch')
+    while (attempts < maxAttempts) {
         try {
             op = await uploadFn();
+            break; // Success, break the retry loop
         } catch (err: any) {
-            // Handle common retryable network issues
-            if (err.message?.includes('Deadline') || err.status === 504 || err.status === 429) {
+            attempts++;
+            const isNetworkError = err instanceof TypeError || err.message?.includes('fetch');
+            const isRetryableStatus = err.status === 504 || err.status === 429 || err.status === 503;
+
+            if ((isNetworkError || isRetryableStatus) && attempts < maxAttempts) {
+                console.warn(`Upload attempt ${attempts} failed. Retrying in 5s...`, err);
                 await delay(5000);
-                op = await uploadFn();
-            } else {
-                throw err;
+                continue;
             }
+            throw handleApiError(err, "uploadToRagStore");
         }
-        
-        let retries = 0;
-        const maxRetries = 150; 
-        
-        while (!op.done && retries < maxRetries) {
-            await delay(3000); 
-            try {
-                op = await ai.operations.get({ operation: op });
+    }
+
+    if (!op) throw new Error("UPLOAD_FAILED: Could not initiate upload.");
+    
+    // Inner loop for polling the operation status
+    let retries = 0;
+    const maxRetries = 150; 
+    
+    while (!op.done && retries < maxRetries) {
+        await delay(3000); 
+        try {
+            op = await ai.operations.get({ operation: op });
+            retries++;
+        } catch (pollErr: any) {
+            // Be lenient with polling errors, they are often transient
+            if (pollErr.message?.includes('Deadline') || pollErr.status === 504 || pollErr instanceof TypeError) {
                 retries++;
-            } catch (pollErr: any) {
-                if (pollErr.message?.includes('Deadline') || pollErr.status === 504) {
-                    retries++;
-                    continue;
-                }
-                throw pollErr;
+                continue;
             }
+            throw handleApiError(pollErr, "pollUploadStatus");
         }
-        
-        if (retries >= maxRetries && !op.done) {
-            throw new Error("INDEXING_TIMEOUT: File is taking too long to index. This can happen with very large files or slow API response times.");
-        }
-        
-        if (op.error) {
-            throw new Error(`AI_READ_ERROR: ${op.error.message}`);
-        }
-    } catch (err: any) {
-        throw handleApiError(err, "uploadToRagStore");
+    }
+    
+    if (retries >= maxRetries && !op.done) {
+        throw new Error("INDEXING_TIMEOUT: File is taking too long to index. Large textbooks can sometimes take several minutes.");
+    }
+    
+    if (op.error) {
+        throw new Error(`AI_READ_ERROR: ${op.error.message}`);
     }
 }
 
