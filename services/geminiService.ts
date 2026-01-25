@@ -30,17 +30,17 @@ function handleApiError(err: any, context: string): Error {
     console.error(`Gemini API Error [${context}]:`, err);
     
     if (err.message === "API_KEY_MISSING") {
-        return new Error("MISSING_KEY: Please add 'API_KEY' to Vercel Environment Variables and REDEPLOY.");
+        return new Error("MISSING_KEY: Please add 'API_KEY' to your Vercel Environment Variables and REDEPLOY the project.");
     }
 
     let message = err.message || "Unknown API error";
     
     if (message.includes("403") || message.includes("permission")) {
-        message = "PERMISSION_DENIED: 1. Enable 'Generative Language API' in Google Cloud. 2. Attach a Billing Method (RAG requires a paid project).";
+        message = "PERMISSION_DENIED: 1. Enable 'Generative Language API' in Google Cloud Console. 2. Attach a Billing Method (RAG features require a paid project tier).";
     } else if (message.includes("404") || message.includes("not found")) {
-        message = "NOT_FOUND: The requested feature (File Search) might not be available in your current API project region.";
+        message = "NOT_FOUND: The requested feature or project entity was not found. Verify your API key and project region settings.";
     } else if (message.includes("429") || message.includes("quota")) {
-        message = "QUOTA_EXCEEDED: Too many requests. Please wait a minute.";
+        message = "QUOTA_EXCEEDED: Too many requests. Please wait a moment.";
     }
     
     return new Error(message);
@@ -94,7 +94,7 @@ export async function uploadToRagStore(ragStoreName: string, file: File): Promis
         }
         
         if (retries >= maxRetries && !op.done) {
-            throw new Error("INDEXING_TIMEOUT: The file processing is taking longer than expected. Large PDFs can take several minutes.");
+            throw new Error("INDEXING_TIMEOUT: File processing is taking longer than expected. Please check your Google Cloud Console for indexing status.");
         }
         
         if (op.error) {
