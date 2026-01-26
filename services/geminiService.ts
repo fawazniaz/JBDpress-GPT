@@ -15,214 +15,73 @@ async function delay(ms: number): Promise<void> {
 }
 
 /**
- * Wraps a promise with a timeout
- */
-async function withTimeout<T>(promise: Promise<T>, ms: number, errorMessage: string): Promise<T> {
-    let timeoutId: any;
-    const timeoutPromise = new Promise<never>((_, reject) => {
-        timeoutId = setTimeout(() => reject(new Error(errorMessage)), ms);
-    });
-    return Promise.race([promise, timeoutPromise]).finally(() => clearTimeout(timeoutId));
-}
-
-/**
- * Robust retry wrapper for transient API errors (503, 500)
- */
-async function withRetry<T>(fn: (retryCount: number) => Promise<T>, maxRetries = 4): Promise<T> {
-    let lastError: any;
-    for (let i = 0; i < maxRetries; i++) {
-        try {
-            return await fn(i);
-        } catch (err: any) {
-            lastError = err;
-            const isTransient = err.message?.includes("503") || 
-                               err.message?.includes("500") || 
-                               err.message?.includes("overloaded") ||
-                               err.message?.includes("UNAVAILABLE") ||
-                               err.message?.includes("deadline");
-            
-            if (isTransient && i < maxRetries - 1) {
-                const backoff = Math.pow(2, i) * 3000; 
-                console.warn(`Transient Error. Retry ${i+1}/${maxRetries} in ${backoff}ms...`, err);
-                await delay(backoff);
-                continue;
-            }
-            throw err;
-        }
-    }
-    throw lastError;
-}
-
-function handleApiError(err: any, context: string): Error {
-    console.error(`Gemini API Error [${context}]:`, err);
-    let message = err.message || "Unknown AI error";
-
-    if (message.includes("503") || message.includes("overloaded") || message.includes("UNAVAILABLE")) {
-        return new Error("SERVER_OVERLOADED: The AI service is under extreme heavy load. Please wait 20 seconds and refresh.");
-    }
-
-    if (message.includes("429") || message.includes("RESOURCE_EXHAUSTED") || message.includes("quota")) {
-        return new Error("QUOTA_EXCEEDED: API limit reached. Please wait 1 minute.");
-    }
-
-    if (message.includes("Requested entity was not found.")) {
-        return new Error("RESELECTION_REQUIRED: Session expired. Please re-select your API key.");
-    }
-
-    return new Error(`${context} failed: ${message}`);
-}
-
-/**
- * Robustly fetches all RAG stores and ensures NO duplicates.
+ * Robustly fetches all RAG stores.
  */
 export async function listAllModules(): Promise<TextbookModule[]> {
-    return withRetry(async () => {
-        try {
-            const ai = new GoogleGenAI({ apiKey: process.env.API_KEY }) as any;
-            
-            if (!ai.fileSearchStores) {
-                console.error("Critical: SDK fileSearchStores missing.");
-                return [];
-            }
-
-            let cloudStores: any[] = [];
-            try {
-                const response: any = await withTimeout(
-                    ai.fileSearchStores.list(),
-                    25000,
-                    "Cloud list timed out."
-                );
-
-                if (Array.isArray(response)) cloudStores = response;
-                else if (response?.fileSearchStores) cloudStores = response.fileSearchStores;
-                else if (response?.stores) cloudStores = response.stores;
-            } catch (e: any) {
-                console.warn("Cloud list request failed. Falling back to local cache.");
-            }
-
-            const localRegistry: TextbookModule[] = JSON.parse(localStorage.getItem(LOCAL_REGISTRY_KEY) || '[]');
-            const mergedMap = new Map<string, TextbookModule>();
-            
-            // 1. Process Cloud Stores First (Source of Truth)
-            for (const store of cloudStores) {
-                if (!store.name) continue;
-                mergedMap.set(store.name, {
-                    name: store.displayName || 'Untitled Module',
-                    storeName: store.name,
-                    books: []
-                });
-            }
-
-            // 2. Merge Local Cache (Only if missing from cloud)
-            for (const local of localRegistry) {
-                if (!mergedMap.has(local.storeName)) {
-                    mergedMap.set(local.storeName, {
-                        name: local.name,
-                        storeName: local.storeName,
-                        books: Array.from(new Set(local.books || [])) // Internal book deduplication
-                    });
-                }
-            }
-
-            const rawResults = Array.from(mergedMap.values());
-            
-            // 3. Deep Sync Books per Store
-            const enrichedPromises = rawResults.map(async (mod) => {
-                try {
-                    const filesResponse: any = await ai.fileSearchStores.listFilesSearchStoreFiles({
-                        fileSearchStoreName: mod.storeName
-                    });
-                    
-                    let files: any[] = [];
-                    if (Array.isArray(filesResponse)) files = filesResponse;
-                    else if (filesResponse?.fileSearchStoreFiles) files = filesResponse.fileSearchStoreFiles;
-                    else if (filesResponse?.files) files = filesResponse.files;
-
-                    // Strictly unique file names
-                    const bookNames = files.map((f: any) => f.displayName || 'Unnamed File');
-                    const uniqueBooks = Array.from(new Set([...bookNames, ...mod.books]))
-                                           .filter(b => b && !b.includes('...')); // Remove placeholder status items
-
-                    return {
-                        ...mod,
-                        books: uniqueBooks.length > 0 ? uniqueBooks : ['No files found']
-                    };
-                } catch (e) {
-                    return mod; 
-                }
-            });
-
-            const finalResults = await Promise.all(enrichedPromises);
-            
-            // Save cleaned state
-            localStorage.setItem(LOCAL_REGISTRY_KEY, JSON.stringify(finalResults));
-            return finalResults;
-        } catch (err: any) {
-            throw handleApiError(err, "listAllModules");
+    try {
+        const ai = new GoogleGenAI({ apiKey: process.env.API_KEY }) as any;
+        
+        if (!ai.fileSearchStores) {
+            console.error("SDK fileSearchStores missing.");
+            return JSON.parse(localStorage.getItem(LOCAL_REGISTRY_KEY) || '[]');
         }
-    });
+
+        const response: any = await ai.fileSearchStores.list();
+        const cloudStores = response.fileSearchStores || response.stores || (Array.isArray(response) ? response : []);
+
+        const modules: TextbookModule[] = await Promise.all(cloudStores.map(async (s: any) => {
+            try {
+                const filesResponse: any = await ai.fileSearchStores.listFilesSearchStoreFiles({
+                    fileSearchStoreName: s.name
+                });
+                const files = filesResponse.fileSearchStoreFiles || filesResponse.files || (Array.isArray(filesResponse) ? filesResponse : []);
+                return {
+                    name: s.displayName || 'Untitled Module',
+                    storeName: s.name,
+                    books: files.map((f: any) => f.displayName || 'Unnamed File')
+                };
+            } catch (e) {
+                return {
+                    name: s.displayName || 'Untitled Module',
+                    storeName: s.name,
+                    books: ['Syncing...']
+                };
+            }
+        }));
+
+        if (modules.length > 0) {
+            localStorage.setItem(LOCAL_REGISTRY_KEY, JSON.stringify(modules));
+        }
+        
+        return modules.length > 0 ? modules : JSON.parse(localStorage.getItem(LOCAL_REGISTRY_KEY) || '[]');
+    } catch (err) {
+        console.error("listAllModules Error:", err);
+        return JSON.parse(localStorage.getItem(LOCAL_REGISTRY_KEY) || '[]');
+    }
 }
 
 export async function createRagStore(displayName: string): Promise<string> {
-    try {
-        const ai = new GoogleGenAI({ apiKey: process.env.API_KEY }) as any;
-        const ragStore: any = await ai.fileSearchStores.create({ config: { displayName } });
-        const storeName = ragStore.name || "";
-        
-        const registry = JSON.parse(localStorage.getItem(LOCAL_REGISTRY_KEY) || '[]');
-        // Ensure we don't add a duplicate entry to local registry
-        if (!registry.some((r: any) => r.storeName === storeName)) {
-            registry.push({ name: displayName, storeName: storeName, books: ['New Module Created...'] });
-            localStorage.setItem(LOCAL_REGISTRY_KEY, JSON.stringify(registry));
-        }
-        
-        return storeName;
-    } catch (err: any) {
-        throw handleApiError(err, "createRagStore");
-    }
+    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY }) as any;
+    const ragStore: any = await ai.fileSearchStores.create({ config: { displayName } });
+    return ragStore.name || "";
 }
 
 export async function uploadToRagStore(ragStoreName: string, file: File): Promise<void> {
     const ai = new GoogleGenAI({ apiKey: process.env.API_KEY }) as any;
-    let op: any;
+    const op: any = await ai.fileSearchStores.uploadToFileSearchStore({
+        fileSearchStoreName: ragStoreName,
+        file: file
+    });
 
-    try {
-        op = await ai.fileSearchStores.uploadToFileSearchStore({
-            fileSearchStoreName: ragStoreName,
-            file: file
-        });
-    } catch (err: any) {
-        throw handleApiError(err, "Upload request");
-    }
-
-    if (!op || !op.name) throw new Error("Cloud upload rejected.");
+    if (!op || !op.name) throw new Error("Upload failed.");
     
-    let retries = 0;
-    const maxRetries = 30; 
-    
-    while (retries < maxRetries) {
-        await delay(6000); 
-        try {
-            const pollAi = new GoogleGenAI({ apiKey: process.env.API_KEY }) as any;
-            const currentOp: any = await pollAi.operations.get({ name: op.name });
-            if (currentOp?.done) {
-                if (currentOp.error) throw new Error(`Indexing error: ${currentOp.error.message}`);
-                
-                // Update local registry with unique books
-                const registry: TextbookModule[] = JSON.parse(localStorage.getItem(LOCAL_REGISTRY_KEY) || '[]');
-                const idx = registry.findIndex(r => r.storeName === ragStoreName);
-                if (idx !== -1) {
-                    const currentBooks = registry[idx].books.filter(b => !b.includes('...'));
-                    if (!currentBooks.includes(file.name)) {
-                        registry[idx].books = Array.from(new Set([...currentBooks, file.name]));
-                        localStorage.setItem(LOCAL_REGISTRY_KEY, JSON.stringify(registry));
-                    }
-                }
-                return; 
-            }
-            retries++;
-        } catch (pollErr: any) {
-            retries++;
+    let done = false;
+    while (!done) {
+        await delay(5000);
+        const currentOp: any = await ai.operations.get({ name: op.name });
+        if (currentOp?.done) {
+            if (currentOp.error) throw new Error(currentOp.error.message);
+            done = true;
         }
     }
 }
@@ -238,63 +97,52 @@ export async function fileSearch(
     useFastMode: boolean = false,
     bookFocus?: string
 ): Promise<QueryResult> {
-    return withRetry(async (retryCount) => {
-        const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-        const model = retryCount === 0 ? 'gemini-3-flash-preview' : 'gemini-flash-lite-latest';
-        
-        let instruction = BASE_GROUNDING_INSTRUCTION;
-        if (bookFocus) { instruction += `\n\nFOCUS: Only search in: "${bookFocus}".`; }
-        
-        switch(method) {
-            case 'blooms': instruction += " Apply Bloom's Taxonomy."; break;
-            case 'montessori': instruction += " Use Montessori methods."; break;
-            case 'pomodoro': instruction += " 25-minute study focus."; break;
-            case 'kindergarten': instruction += " Simple analogies."; break;
-            case 'lesson-plan': instruction += " Generate a Teacher's Lesson Plan."; break;
-        }
+    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+    let instruction = BASE_GROUNDING_INSTRUCTION;
+    if (bookFocus) { instruction += `\n\nFOCUS: Only search in: "${bookFocus}".`; }
+    
+    switch(method) {
+        case 'blooms': instruction += " Apply Bloom's Taxonomy."; break;
+        case 'montessori': instruction += " Use Montessori methods."; break;
+        case 'pomodoro': instruction += " 25-minute study focus."; break;
+        case 'kindergarten': instruction += " Simple analogies."; break;
+        case 'lesson-plan': instruction += " Generate a Teacher's Lesson Plan."; break;
+    }
 
-        try {
-            const response: GenerateContentResponse = await ai.models.generateContent({
-                model: model,
-                contents: query,
-                config: {
-                    systemInstruction: instruction,
-                    tools: [{ fileSearch: { fileSearchStoreNames: [ragStoreName] } } as any]
-                }
-            });
-
-            return {
-                text: response.text || "No direct answer found in the textbooks.",
-                groundingChunks: response.candidates?.[0]?.groundingMetadata?.groundingChunks || [],
-            };
-        } catch (err: any) {
-            throw handleApiError(err, `fileSearch`);
+    const response: GenerateContentResponse = await ai.models.generateContent({
+        model: 'gemini-3-flash-preview',
+        contents: query,
+        config: {
+            systemInstruction: instruction,
+            tools: [{ fileSearch: { fileSearchStoreNames: [ragStoreName] } } as any]
         }
     });
+
+    return {
+        text: response.text || "No response.",
+        groundingChunks: response.candidates?.[0]?.groundingMetadata?.groundingChunks || [],
+    };
 }
 
 export async function generateExampleQuestions(ragStoreName: string): Promise<string[]> {
-    return withRetry(async () => {
-        try {
-            const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-            const response = await ai.models.generateContent({
-                model: 'gemini-3-flash-preview',
-                contents: 'List 3 study questions based on these textbooks.',
-                config: {
-                    tools: [{ fileSearch: { fileSearchStoreNames: [ragStoreName] } } as any],
-                    responseMimeType: 'application/json',
-                    responseSchema: {
-                        type: Type.ARRAY,
-                        items: { type: Type.STRING }
-                    }
+    try {
+        const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+        const response = await ai.models.generateContent({
+            model: 'gemini-3-flash-preview',
+            contents: 'List 3 study questions.',
+            config: {
+                tools: [{ fileSearch: { fileSearchStoreNames: [ragStoreName] } } as any],
+                responseMimeType: 'application/json',
+                responseSchema: {
+                    type: Type.ARRAY,
+                    items: { type: Type.STRING }
                 }
-            });
-            const q = JSON.parse(response.text || "[]");
-            return Array.from(new Set(q)); // Deduplicate questions
-        } catch (err) {
-            return ["What are the key goals?", "Summarize the introduction.", "Explain the main theory."];
-        }
-    });
+            }
+        });
+        return JSON.parse(response.text || "[]");
+    } catch (err) {
+        return ["What are the key concepts?"];
+    }
 }
 
 export async function connectLive(callbacks: {

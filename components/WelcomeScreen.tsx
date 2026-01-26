@@ -43,25 +43,6 @@ const WelcomeScreen: React.FC<WelcomeScreenProps> = ({
                 </div>
             </header>
 
-            {/* Admin Health Alert Banner */}
-            {user.role === 'admin' && (
-                <div className="bg-amber-500 text-white px-6 py-3 flex justify-between items-center animate-in slide-in-from-top duration-500">
-                    <div className="flex items-center gap-3">
-                        <span className="text-xl">🛡️</span>
-                        <p className="text-xs font-bold uppercase tracking-wide">
-                            Maintenance Alert: Duplicate Files Detected in Sidebar. 
-                            <span className="hidden sm:inline opacity-80 font-normal normal-case ml-2">App logic is safe, but cleanup is recommended.</span>
-                        </p>
-                    </div>
-                    <button 
-                        onClick={onOpenDashboard}
-                        className="bg-white text-amber-600 px-4 py-1 rounded-full text-[10px] font-black hover:scale-105 transition-transform"
-                    >
-                        VIEW SAFETY CHECKLIST
-                    </button>
-                </div>
-            )}
-
             <div className="flex-grow overflow-y-auto p-6 lg:p-12">
                 <div className="max-w-5xl mx-auto grid grid-cols-1 lg:grid-cols-2 gap-12">
                     <div className="space-y-8">
@@ -78,9 +59,14 @@ const WelcomeScreen: React.FC<WelcomeScreenProps> = ({
                         </div>
 
                         <div className="grid grid-cols-1 gap-4">
-                            {textbooks.length === 0 && !isLibraryLoading ? (
+                            {isLibraryLoading ? (
+                                <div className="flex flex-col items-center py-12 opacity-40">
+                                    <Spinner />
+                                    <p className="text-xs mt-4 font-bold">Synchronizing Library...</p>
+                                </div>
+                            ) : textbooks.length === 0 ? (
                                 <div className="p-12 border-2 border-dashed border-gem-mist-light dark:border-gem-mist-dark rounded-3xl text-center opacity-40">
-                                    <p>No textbooks found.</p>
+                                    <p>No textbooks found. Use the panel on the right to upload some.</p>
                                 </div>
                             ) : (
                                 textbooks.map((lib, idx) => (
