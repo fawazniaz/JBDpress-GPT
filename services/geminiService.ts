@@ -20,7 +20,7 @@ async function delay(ms: number): Promise<void> {
 }
 
 /**
- * Fetches all raw files in the project sequentially to avoid rate limiting.
+ * Fetches all raw files in the project. Defensive: returns empty array on failure.
  */
 export async function listAllCloudFiles(): Promise<CloudFile[]> {
     const ai = new GoogleGenAI({ apiKey: process.env.API_KEY }) as any;
@@ -36,13 +36,13 @@ export async function listAllCloudFiles(): Promise<CloudFile[]> {
                 allFiles = [...allFiles, ...res.files];
             }
             pageToken = res.nextPageToken;
-            if (pageToken) await delay(500); // Throttling
+            if (pageToken) await delay(800); // Throttling
         } while (pageToken);
         
         return allFiles;
     } catch (e) {
-        console.error("Cloud Files Sync Error:", e);
-        throw e;
+        console.warn("Could not list cloud files (Quota/Busy):", e);
+        return []; // Non-blocking
     }
 }
 
@@ -53,7 +53,7 @@ export async function deleteRawFile(fileName: string): Promise<void> {
 }
 
 /**
- * Fetches all modules and their file lists sequentially to avoid rate limits.
+ * Fetches all modules and their file lists. Defensive: returns local cache on failure.
  */
 export async function listAllModules(): Promise<TextbookModule[]> {
     const localData = getLocalRepository();
@@ -70,10 +70,10 @@ export async function listAllModules(): Promise<TextbookModule[]> {
             const stores = cloudResponse.fileSearchStores || cloudResponse.stores || [];
             allStores = [...allStores, ...stores];
             pageToken = cloudResponse.nextPageToken;
-            if (pageToken) await delay(500);
+            if (pageToken) await delay(800);
         } while (pageToken);
 
-        // 2. Fetch details for each store SEQUENTIALLY to avoid 429 errors
+        // 2. Fetch details for each store SEQUENTIALLY
         const results: TextbookModule[] = [];
         for (const s of allStores) {
             try {
@@ -89,14 +89,17 @@ export async function listAllModules(): Promise<TextbookModule[]> {
             } catch (e) {
                 results.push({ name: s.displayName || s.name, storeName: s.name, books: [] });
             }
-            await delay(300); // Throttling per store
+            await delay(500); 
         }
 
-        localStorage.setItem(STABLE_REGISTRY_KEY, JSON.stringify(results));
-        return results;
+        if (results.length > 0) {
+            localStorage.setItem(STABLE_REGISTRY_KEY, JSON.stringify(results));
+            return results;
+        }
+        return localData;
     } catch (err) {
-        console.warn("Module discovery throttled:", err);
-        throw err;
+        console.warn("Cloud modules list failed (Quota/Busy):", err);
+        return localData; // Non-blocking: return what we have locally
     }
 }
 
@@ -150,12 +153,12 @@ export async function fileSearch(ragStoreName: string, query: string, method: st
         model: 'gemini-3-flash-preview',
         contents: query,
         config: {
-            systemInstruction: `You are a textbook tutor. Respond only based on materials provided in the search results. Teaching style: ${method}`,
+            systemInstruction: `You are a textbook tutor. Only use textbooks. Method: ${method}`,
             tools: [{ fileSearch: { fileSearchStoreNames: [ragStoreName] } } as any]
         }
     });
     return {
-        text: response.text || "I couldn't find information about that in the textbooks.",
+        text: response.text || "No specific textbook answer found.",
         groundingChunks: response.candidates?.[0]?.groundingMetadata?.groundingChunks || [],
     };
 }
@@ -173,7 +176,7 @@ export async function generateExampleQuestions(ragStoreName: string): Promise<st
             }
         });
         return JSON.parse(response.text || "[]");
-    } catch { return ["What are the main topics?"]; }
+    } catch { return ["What are the key concepts?"]; }
 }
 
 export async function connectLive(callbacks: any, method: string = 'standard'): Promise<any> {
@@ -184,7 +187,7 @@ export async function connectLive(callbacks: any, method: string = 'standard'): 
         config: {
             responseModalities: [Modality.AUDIO],
             speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Puck' } } },
-            systemInstruction: `Study assistant (${method}).`,
+            systemInstruction: `Assistant (${method}).`,
         }
     });
 }
