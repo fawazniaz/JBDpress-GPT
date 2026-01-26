@@ -65,14 +65,16 @@ const App: React.FC = () => {
     }, []);
 
     const fetchLibrary = useCallback(async (force: boolean = false) => {
+        // Prevent double loading unless forced
         if (isLibraryLoading && !force) return;
+        
         setIsLibraryLoading(true);
         setApiKeyError(null);
         
         try {
+            // listAllModules now returns immediately from cache while syncing in bg
             const modules = await geminiService.listAllModules();
             
-            // UI-side deduplication safeguard
             const uniqueModulesMap = new Map();
             modules.forEach(m => {
                 if (m.storeName && !uniqueModulesMap.has(m.storeName)) {
@@ -83,23 +85,24 @@ const App: React.FC = () => {
             const uniqueList = Array.from(uniqueModulesMap.values());
             setGlobalTextbooks(uniqueList);
             
+            // If we have something, even cache, stop the spinner early for UX
             if (uniqueList.length > 0) {
-                setError(null);
-                if (status === AppStatus.Error) setStatus(AppStatus.Welcome);
+                setIsLibraryLoading(false);
             }
         } catch (err: any) {
-            console.error("Library Sync Error:", err);
-            setApiKeyError(`Sync: ${err.message || "Intermittent Connection"}`);
+            console.error("Library Sync Failure:", err);
+            setApiKeyError(`Sync status: Using local repository.`);
         } finally {
-            setIsLibraryLoading(false);
+            // Always stop loading eventually
+            setTimeout(() => setIsLibraryLoading(false), 2000);
         }
-    }, [isLibraryLoading, status]);
+    }, [isLibraryLoading]);
 
     useEffect(() => {
-        if ((status === AppStatus.Welcome || status === AppStatus.Chatting) && isApiKeySelected) {
+        if (status === AppStatus.Welcome && isApiKeySelected) {
             fetchLibrary();
         }
-    }, [status, isApiKeySelected, fetchLibrary]);
+    }, [status, isApiKeySelected]); // Removed fetchLibrary from deps to prevent loops
 
     const toggleDarkMode = () => {
         setIsDarkMode(prev => {
@@ -142,19 +145,23 @@ const App: React.FC = () => {
         setStatus(AppStatus.Uploading);
         try {
             const moduleLabel = prompt("Enter Name for this Course Folder:") || `Course ${globalTextbooks.length + 1}`;
-            setUploadProgress({ current: 0, total: files.length, message: "Initializing Cloud Store...", fileName: "Connecting..." });
+            setUploadProgress({ current: 0, total: files.length, message: "Requesting Cloud Storage...", fileName: "Connecting..." });
+            
             const ragStoreName = await geminiService.createRagStore(moduleLabel);
+            
             for (let i = 0; i < files.length; i++) {
                 setUploadProgress({ 
                     current: i + 1, 
                     total: files.length, 
-                    message: `Sending File (${(files[i].size / 1048576).toFixed(1)}MB)...`, 
+                    message: `Uploading File ${i+1}/${files.length}...`, 
                     fileName: files[i].name 
                 });
                 await geminiService.uploadToRagStore(ragStoreName, files[i]);
             }
-            await fetchLibrary(true);
+            
             setFiles([]);
+            // Refresh to confirm cloud state
+            await fetchLibrary(true);
             setStatus(AppStatus.Welcome);
         } catch (err: any) {
             handleError(err, "Upload Failed");

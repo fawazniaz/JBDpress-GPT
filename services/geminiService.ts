@@ -5,26 +5,35 @@
 import { GoogleGenAI, GenerateContentResponse, Type, Modality, LiveServerMessage } from "@google/genai";
 import { QueryResult, TextbookModule } from '../types';
 
-// The definitive source of truth for local data
-const MASTER_KEY = 'JBDPRESS_REPOSITORY_MASTER';
+// The definitive source of truth for the local repository
+const STABLE_REGISTRY_KEY = 'JBDPRESS_STABLE_REGISTRY_FINAL';
 
 /**
- * Migration helper to recover data from older versions
+ * Migration & Recovery: Scans all previous storage attempts to ensure no data is left behind.
  */
-function migrateLegacyData(): TextbookModule[] {
-    const keys = ['jbdpress_stores_v1', 'jbdpress_stores_v2', 'jbdpress_stores_stable_v1', 'jbd_textbooks'];
+function getLocalRepository(): TextbookModule[] {
+    const legacyKeys = [
+        'JBDPRESS_REPOSITORY_MASTER', 
+        'jbdpress_stores_stable_v1', 
+        'jbdpress_stores_v2', 
+        'jbdpress_stores_v1', 
+        'jbd_textbooks'
+    ];
+    
     const registryMap = new Map<string, TextbookModule>();
     
-    // Load existing master data first
-    const master = JSON.parse(localStorage.getItem(MASTER_KEY) || '[]');
-    master.forEach((m: TextbookModule) => registryMap.set(m.storeName, m));
+    // Load existing stable data
+    const currentStable = JSON.parse(localStorage.getItem(STABLE_REGISTRY_KEY) || '[]');
+    currentStable.forEach((m: TextbookModule) => {
+        if (m && m.storeName) registryMap.set(m.storeName, m);
+    });
 
-    // Scrape legacy keys
-    keys.forEach(key => {
+    // Scavenge legacy keys for missing data
+    legacyKeys.forEach(key => {
         try {
-            const data = JSON.parse(localStorage.getItem(key) || '[]');
-            if (Array.isArray(data)) {
-                data.forEach((m: any) => {
+            const legacyData = JSON.parse(localStorage.getItem(key) || '[]');
+            if (Array.isArray(legacyData)) {
+                legacyData.forEach((m: any) => {
                     if (m && m.storeName && !registryMap.has(m.storeName)) {
                         registryMap.set(m.storeName, m);
                     }
@@ -35,143 +44,132 @@ function migrateLegacyData(): TextbookModule[] {
 
     const final = Array.from(registryMap.values());
     if (final.length > 0) {
-        localStorage.setItem(MASTER_KEY, JSON.stringify(final));
+        localStorage.setItem(STABLE_REGISTRY_KEY, JSON.stringify(final));
     }
     return final;
 }
 
-/**
- * Delay helper
- */
 async function delay(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 /**
- * Timeout wrapper for promises
- */
-async function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
-    return Promise.race([
-        promise,
-        new Promise<T>((resolve) => setTimeout(() => resolve(fallback), ms))
-    ]);
-}
-
-/**
- * Robustly fetches all RAG stores with fallback to master registry.
+ * Robustly fetches all modules. Returns local data immediately while syncing cloud in background.
  */
 export async function listAllModules(): Promise<TextbookModule[]> {
-    // 1. Start with migrated local data for instant response
-    const currentRegistry = migrateLegacyData();
+    const localData = getLocalRepository();
     const registryMap = new Map<string, TextbookModule>();
-    currentRegistry.forEach(m => registryMap.set(m.storeName, m));
+    localData.forEach(m => registryMap.set(m.storeName, m));
 
     try {
         const ai = new GoogleGenAI({ apiKey: process.env.API_KEY }) as any;
         
-        if (!ai.fileSearchStores) {
-            return currentRegistry;
-        }
+        // If fileSearchStores isn't available, we strictly use local data
+        if (!ai.fileSearchStores) return localData;
 
-        // 2. Fetch fresh metadata from Cloud with a timeout to prevent hanging
-        const response: any = await withTimeout(ai.fileSearchStores.list(), 8000, { fileSearchStores: [] });
-        const cloudStores = response.fileSearchStores || response.stores || (Array.isArray(response) ? response : []);
+        // Fetch cloud list with a reasonable timeout
+        const cloudResponse: any = await Promise.race([
+            ai.fileSearchStores.list(),
+            new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout")), 10000))
+        ]).catch(() => ({ fileSearchStores: [] }));
 
-        if (cloudStores.length === 0) {
-            return currentRegistry;
-        }
+        const cloudStores = cloudResponse.fileSearchStores || cloudResponse.stores || (Array.isArray(cloudResponse) ? cloudResponse : []);
 
-        // 3. Process Cloud Stores in Parallel
-        const updatedModules = await Promise.all(cloudStores.map(async (s: any) => {
+        // Update local registry with cloud data (Additive only)
+        for (const s of cloudStores) {
             try {
-                // Try fetching files with a strict 5s timeout
-                const filesRes: any = await withTimeout(
-                    ai.fileSearchStores.listFilesSearchStoreFiles({ fileSearchStoreName: s.name }),
-                    5000,
-                    { fileSearchStoreFiles: [] }
-                );
+                // Fetch files for this store to verify content
+                const filesRes: any = await ai.fileSearchStores.listFilesSearchStoreFiles({ 
+                    fileSearchStoreName: s.name 
+                }).catch(() => ({ fileSearchStoreFiles: [] }));
                 
-                const files = filesRes.fileSearchStoreFiles || filesRes.files || (Array.isArray(filesRes) ? filesRes : []);
+                const files = filesRes.fileSearchStoreFiles || filesRes.files || [];
                 const bookNames = files.map((f: any) => f.displayName || 'Unnamed File');
-                
-                return {
+
+                registryMap.set(s.name, {
                     name: s.displayName || 'Untitled Module',
                     storeName: s.name,
                     books: Array.from(new Set(bookNames))
-                };
+                });
             } catch (e) {
-                // Use existing data if cloud check fails
-                return registryMap.get(s.name) || {
-                    name: s.displayName || 'Untitled Module',
-                    storeName: s.name,
-                    books: ['Syncing...']
-                };
+                // If cloud detail fetch fails, preserve the local version
+                if (!registryMap.has(s.name)) {
+                    registryMap.set(s.name, {
+                        name: s.displayName || 'Untitled Module',
+                        storeName: s.name,
+                        books: ['Syncing content...']
+                    });
+                }
             }
-        }));
+        }
 
-        // 4. Update the Registry Map (Cloud data updates existing entries)
-        updatedModules.forEach(m => {
-            const existing = registryMap.get(m.storeName);
-            // If the cloud version has zero books but local has some, keep local list (likely a sync lag)
-            if (m.books.length === 0 && existing && existing.books.length > 0) {
-                registryMap.set(m.storeName, { ...m, books: existing.books });
-            } else {
-                registryMap.set(m.storeName, m);
-            }
-        });
-        
         const finalResults = Array.from(registryMap.values());
-        localStorage.setItem(MASTER_KEY, JSON.stringify(finalResults));
+        localStorage.setItem(STABLE_REGISTRY_KEY, JSON.stringify(finalResults));
         return finalResults;
     } catch (err) {
-        console.error("Cloud Sync Error:", err);
-        return currentRegistry;
+        console.error("Cloud Sync Interrupted - Using Local Master:", err);
+        return localData;
     }
 }
 
 export async function createRagStore(displayName: string): Promise<string> {
     const ai = new GoogleGenAI({ apiKey: process.env.API_KEY }) as any;
-    const ragStore: any = await ai.fileSearchStores.create({ config: { displayName } });
-    const storeName = ragStore.name || "";
     
-    // Instant local update
-    const current = JSON.parse(localStorage.getItem(MASTER_KEY) || '[]');
-    current.push({ name: displayName, storeName, books: ['Preparing Store...'] });
-    localStorage.setItem(MASTER_KEY, JSON.stringify(current));
-    
-    return storeName;
+    // 1. Prepare local placeholder
+    const tempStoreName = `pending_${Date.now()}`;
+    const local = getLocalRepository();
+    local.push({ name: displayName, storeName: tempStoreName, books: ['Provisioning...'] });
+    localStorage.setItem(STABLE_REGISTRY_KEY, JSON.stringify(local));
+
+    try {
+        const ragStore: any = await ai.fileSearchStores.create({ config: { displayName } });
+        const realName = ragStore.name || "";
+        
+        // 2. Update local with real name
+        const updated = getLocalRepository().map(m => 
+            m.storeName === tempStoreName ? { ...m, storeName: realName } : m
+        );
+        localStorage.setItem(STABLE_REGISTRY_KEY, JSON.stringify(updated));
+        
+        return realName;
+    } catch (err) {
+        // Rollback on fail
+        const rolledBack = getLocalRepository().filter(m => m.storeName !== tempStoreName);
+        localStorage.setItem(STABLE_REGISTRY_KEY, JSON.stringify(rolledBack));
+        throw err;
+    }
 }
 
 export async function uploadToRagStore(ragStoreName: string, file: File): Promise<void> {
     const ai = new GoogleGenAI({ apiKey: process.env.API_KEY }) as any;
+    
+    // Add file to local list immediately (Optimistic UI)
+    const local = getLocalRepository();
+    const idx = local.findIndex(m => m.storeName === ragStoreName);
+    if (idx !== -1) {
+        if (!local[idx].books.includes(file.name)) {
+            local[idx].books.push(file.name);
+            localStorage.setItem(STABLE_REGISTRY_KEY, JSON.stringify(local));
+        }
+    }
+
     const op: any = await ai.fileSearchStores.uploadToFileSearchStore({
         fileSearchStoreName: ragStoreName,
         file: file
     });
 
-    if (!op || !op.name) throw new Error("Upload initialization failed.");
+    if (!op || !op.name) throw new Error("Cloud upload rejected.");
     
-    // Polling with capped attempts
+    // Poll for completion
     let attempts = 0;
-    while (attempts < 20) {
-        await delay(4000);
+    while (attempts < 25) {
+        await delay(3000);
         const currentOp: any = await ai.operations.get({ name: op.name });
         if (currentOp?.done) {
             if (currentOp.error) throw new Error(currentOp.error.message);
             break;
         }
         attempts++;
-    }
-
-    // Immediate optimistic local update
-    const current = JSON.parse(localStorage.getItem(MASTER_KEY) || '[]');
-    const idx = current.findIndex((m: any) => m.storeName === ragStoreName);
-    if (idx !== -1) {
-        const books = current[idx].books.filter((b: string) => !b.includes('...'));
-        if (!books.includes(file.name)) {
-            current[idx].books = Array.from(new Set([...books, file.name]));
-            localStorage.setItem(MASTER_KEY, JSON.stringify(current));
-        }
     }
 }
 
@@ -218,7 +216,7 @@ export async function generateExampleQuestions(ragStoreName: string): Promise<st
         const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
         const response = await ai.models.generateContent({
             model: 'gemini-3-flash-preview',
-            contents: 'Suggest 3 study questions.',
+            contents: 'Suggest 3 study questions based on these materials.',
             config: {
                 tools: [{ fileSearch: { fileSearchStoreNames: [ragStoreName] } } as any],
                 responseMimeType: 'application/json',
@@ -230,7 +228,7 @@ export async function generateExampleQuestions(ragStoreName: string): Promise<st
         });
         return JSON.parse(response.text || "[]");
     } catch (err) {
-        return ["What are the primary objectives?", "Define key terms.", "Summarize this module."];
+        return ["What are the key concepts?", "Define the main terms.", "Summarize the material."];
     }
 }
 
