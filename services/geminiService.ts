@@ -54,6 +54,7 @@ export async function listAllModules(): Promise<TextbookModule[]> {
             return [];
         }
 
+        // Fetch stores with a 30s timeout
         const storesResponse = (await withTimeout(
             ai.fileSearchStores.list(),
             30000,
@@ -62,7 +63,7 @@ export async function listAllModules(): Promise<TextbookModule[]> {
 
         const modules: TextbookModule[] = [];
         
-        // Handle varied response formats (Array vs Object vs Iterator)
+        // Robust detection of stores: check for fileSearchStores, stores, or direct array
         let stores: any[] = [];
         if (Array.isArray(storesResponse)) {
             stores = storesResponse;
@@ -84,6 +85,7 @@ export async function listAllModules(): Promise<TextbookModule[]> {
                     fileSearchStoreName: store.name!
                 })) as any;
                 
+                // Robust detection of files
                 let files: any[] = [];
                 if (Array.isArray(filesResponse)) {
                     files = filesResponse;
@@ -100,6 +102,7 @@ export async function listAllModules(): Promise<TextbookModule[]> {
                 });
             } catch (e) {
                 console.warn(`Could not list files for store ${store.name}:`, e);
+                // Still add the store name so the folder appears, even if books fail to list
                 modules.push({
                     name: store.displayName || 'Untitled Module',
                     storeName: store.name!,
@@ -146,7 +149,7 @@ export async function uploadToRagStore(ragStoreName: string, file: File): Promis
     if (!op || !op.name) throw new Error("UPLOAD_FAILED: Cloud did not return an operation ID.");
     
     let retries = 0;
-    const maxRetries = 180; // 15 minutes (180 * 5s)
+    const maxRetries = 180; // 15 minutes max wait (180 * 5s)
     
     while (retries < maxRetries) {
         await delay(5000); 
@@ -158,13 +161,17 @@ export async function uploadToRagStore(ragStoreName: string, file: File): Promis
                     if (op.error) {
                         throw new Error(`Cloud indexing error: ${op.error.message}`);
                     }
-                    return; // Indexing complete
+                    return; // Indexing successfully complete
                 }
             }
             retries++;
         } catch (pollErr: any) {
             console.warn("Polling operation status failed, retrying...", pollErr);
             retries++;
+            // Don't kill the loop on a single polling error, cloud might be busy
+            if (retries > 50 && pollErr.message.includes("404")) {
+                 throw new Error("OPERATION_LOST: Cloud operation was lost. Check your library in a moment.");
+            }
         }
     }
     
