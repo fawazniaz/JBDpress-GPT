@@ -1,10 +1,8 @@
-
 /**
  * @license
  * SPDX-License-Identifier: Apache-2.0
 */
-
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { AppStatus, ChatMessage, User, TextbookModule } from './types';
 import * as geminiService from './services/geminiService';
 import Spinner from './components/Spinner';
@@ -87,16 +85,7 @@ const App: React.FC = () => {
         } catch (err: any) {
             console.error("Library Sync Error:", err);
             const msg = err.message || "Unknown error";
-            if (msg.includes("QUOTA_EXCEEDED")) {
-                setApiKeyError("Account Throttled. Switching to Light Model...");
-            } else if (msg.includes("RESELECTION_REQUIRED")) {
-                setIsApiKeySelected(false);
-                setApiKeyError("Session Expired. Please Re-Authorize.");
-            } else if (msg.includes("OVERLOADED")) {
-                setApiKeyError("Cloud Busy. Auto-retrying...");
-            } else {
-                setApiKeyError(`Sync: ${msg}`);
-            }
+            setApiKeyError(`Sync: ${msg}`);
         } finally {
             setIsLibraryLoading(false);
         }
@@ -129,24 +118,8 @@ const App: React.FC = () => {
     const handleError = (err: any, customTitle?: string) => {
         console.error("Application Error:", err);
         const errMsg = err.message || "An unexpected error occurred.";
-        
-        if (errMsg.includes("SERVER_OVERLOADED")) {
-            setError("Cloud is Busy");
-            setTechnicalDetails("The global AI server is saturated. We've switched models and tried 4 automatic retries, but it's still busy. Don't worry, your data is safe. Please wait 30 seconds and click 'Force Auto-Retry'.");
-        } else if (errMsg.includes("QUOTA_EXCEEDED") || errMsg.includes("429")) {
-            setError("Model Limit Reached");
-            setTechnicalDetails("Your project is hitting a quota limit. We are using the high-availability 'Flash' model, but the account needs a moment to reset. Please wait 1 minute.");
-        } else if (errMsg.includes("NETWORK_ERROR")) {
-            setError("Network Interrupted");
-            setTechnicalDetails("The connection was lost. This can happen with large textbooks.");
-        } else if (errMsg.includes("INDEXING_TIMEOUT")) {
-            setError("Indexing in Progress");
-            setTechnicalDetails("Upload complete! The cloud is now reading your textbook. It will appear automatically in about 5 minutes.");
-        } else {
-            setError(customTitle || "Operation Blocked");
-            setTechnicalDetails(errMsg);
-        }
-
+        setError(customTitle || "Operation Blocked");
+        setTechnicalDetails(errMsg);
         setStatus(AppStatus.Error);
     };
 
@@ -156,15 +129,11 @@ const App: React.FC = () => {
             return;
         }
         if (files.length === 0) return;
-        
         setStatus(AppStatus.Uploading);
-        
         try {
             const moduleLabel = prompt("Enter Name for this Course Folder:") || `Course ${globalTextbooks.length + 1}`;
             setUploadProgress({ current: 0, total: files.length, message: "Initializing Cloud Store...", fileName: "Connecting..." });
-            
             const ragStoreName = await geminiService.createRagStore(moduleLabel);
-            
             for (let i = 0; i < files.length; i++) {
                 setUploadProgress({ 
                     current: i + 1, 
@@ -172,10 +141,8 @@ const App: React.FC = () => {
                     message: `Sending File (${(files[i].size / 1048576).toFixed(1)}MB)...`, 
                     fileName: files[i].name 
                 });
-                
                 await geminiService.uploadToRagStore(ragStoreName, files[i]);
             }
-            
             await fetchLibrary(true);
             setFiles([]);
             setStatus(AppStatus.Welcome);
@@ -255,39 +222,19 @@ const App: React.FC = () => {
                     exampleQuestions={exampleQuestions}
                 />;
             case AppStatus.Error:
-                 const isBusy = error?.includes("Busy") || error?.includes("Failed");
                  return (
                     <div className="flex flex-col h-screen items-center justify-center p-8 text-center bg-gem-onyx-light dark:bg-gem-onyx-dark transition-colors">
-                        <div className="text-7xl mb-6">
-                            {error === "Indexing in Progress" ? '⏳' : (isBusy ? '☁️' : '⚠️')}
-                        </div>
-                        <h1 className={`text-3xl font-black mb-4 ${error === "Indexing in Progress" ? 'text-gem-blue' : 'text-red-500'}`}>{error}</h1>
+                        <div className="text-7xl mb-6">⚠️</div>
+                        <h1 className="text-3xl font-black mb-4 text-red-500">{error}</h1>
                         <div className="max-w-xl p-8 bg-white dark:bg-gem-slate-dark rounded-[30px] shadow-2xl mb-8">
-                            <p className="font-bold text-gem-blue mb-4">Status Update:</p>
+                            <p className="font-bold text-gem-blue mb-4">Internal Log:</p>
                             <p className="text-sm opacity-70 mb-6 leading-relaxed whitespace-pre-wrap">{technicalDetails}</p>
-                            <div className="flex flex-col sm:flex-row gap-4 justify-center">
-                                <button 
-                                    onClick={() => {
-                                        if (isBusy && activeRagStoreName) {
-                                            setStatus(AppStatus.Chatting);
-                                            setError(null);
-                                        } else {
-                                            setStatus(AppStatus.Welcome);
-                                            setError(null);
-                                            fetchLibrary(true);
-                                        }
-                                    }} 
-                                    className="bg-gem-blue text-white px-10 py-3 rounded-xl font-black shadow-lg hover:scale-105 active:scale-95 transition-all"
-                                >
-                                    {isBusy ? 'Force Auto-Retry' : 'Deep Scan & Reset'}
-                                </button>
-                                <button 
-                                    onClick={() => { setStatus(AppStatus.Welcome); setError(null); }} 
-                                    className="bg-gem-mist-light dark:bg-gem-mist-dark text-gem-onyx-dark dark:text-white px-10 py-3 rounded-xl font-bold hover:scale-105 active:scale-95 transition-all"
-                                >
-                                    Dismiss
-                                </button>
-                            </div>
+                            <button 
+                                onClick={() => { setStatus(AppStatus.Welcome); setError(null); }} 
+                                className="bg-gem-blue text-white px-10 py-3 rounded-xl font-black shadow-lg hover:scale-105 active:scale-95 transition-all"
+                            >
+                                Back to Start
+                            </button>
                         </div>
                     </div>
                  );
