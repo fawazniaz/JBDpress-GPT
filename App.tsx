@@ -77,11 +77,15 @@ const App: React.FC = () => {
             setCloudFiles(rawFiles);
         } catch (err: any) {
             console.error("Library Sync Failure:", err);
+            // Don't show full error screen if we are in the Dashboard already
+            if (status !== AppStatus.AdminDashboard) {
+                handleError(err, "Sync Warning");
+            }
         } finally {
             setIsLibraryLoading(false);
             loadingRef.current = false;
         }
-    }, []);
+    }, [status]);
 
     useEffect(() => {
         if (status === AppStatus.Welcome && isApiKeySelected) fetchLibrary();
@@ -99,10 +103,18 @@ const App: React.FC = () => {
     const handleError = (err: any, customTitle?: string) => {
         console.error("Application Error:", err);
         let errMsg = err.message || "An unexpected error occurred.";
+        
+        // Detailed check for storage vs rate limit
         if (errMsg.includes("RESOURCE_EXHAUSTED") || errMsg.includes("429")) {
-            customTitle = "Storage Limit Reached";
-            errMsg = "Your 1GB cloud quota is full. Use 'Purge All Cloud Data' in Admin Dashboard to reset.";
+            if (errMsg.toLowerCase().includes("quota") || errMsg.toLowerCase().includes("storage")) {
+                customTitle = "Storage Limit Reached";
+                errMsg = "Your 1GB cloud quota is full. Note: It may take up to 2 minutes for the cloud to reflect deletions.";
+            } else {
+                customTitle = "Rate Limit Reached";
+                errMsg = "Too many requests. Please wait 60 seconds and try again.";
+            }
         }
+
         setError(customTitle || "Operation Blocked");
         setTechnicalDetails(errMsg);
         setStatus(AppStatus.Error);
@@ -145,15 +157,30 @@ const App: React.FC = () => {
     };
 
     const handlePurgeAll = async () => {
-        if (!confirm("CRITICAL: This will delete ALL cloud data (stores and files). Continue?")) return;
+        if (!confirm("This will FORCE DELETE every file in your cloud account to reset your 1GB quota. Are you sure?")) return;
         setIsLibraryLoading(true);
         try {
-            for (const store of globalTextbooks) await geminiService.deleteRagStore(store.storeName);
-            for (const file of cloudFiles) await geminiService.deleteRawFile(file.name);
+            // Throttled deletion to avoid 429 errors during purge
+            for (const store of globalTextbooks) {
+                await geminiService.deleteRagStore(store.storeName);
+                await new Promise(r => setTimeout(r, 500));
+            }
+            for (const file of cloudFiles) {
+                await geminiService.deleteRawFile(file.name);
+                await new Promise(r => setTimeout(r, 500));
+            }
+            
+            // Wait 2 seconds for cloud propagation before final sync
+            await new Promise(r => setTimeout(r, 2000));
             await fetchLibrary(true);
-            alert("Storage Purged Successfully.");
-        } catch (err: any) { handleError(err, "Purge Failed"); }
-        finally { setIsLibraryLoading(false); }
+            
+            alert("Storage Purge Complete. If 'Storage Full' persists, please wait 60 seconds for the cloud quota to refresh.");
+        } catch (err: any) { 
+            console.error("Purge Error:", err);
+            alert("Purge partially failed due to rate limits. Please try again in a moment.");
+        } finally { 
+            setIsLibraryLoading(false); 
+        }
     };
 
     const renderContent = () => {
@@ -224,12 +251,12 @@ const App: React.FC = () => {
                 return (
                     <div className="flex flex-col h-screen items-center justify-center p-8 bg-gem-onyx-light dark:bg-gem-onyx-dark">
                         <div className="text-7xl mb-6">⚠️</div>
-                        <h1 className="text-3xl font-black mb-4 text-red-500">{error}</h1>
+                        <h1 className="text-3xl font-black mb-4 text-red-500 uppercase tracking-tighter">{error}</h1>
                         <div className="max-w-xl p-8 bg-white dark:bg-gem-slate-dark rounded-[30px] shadow-2xl border border-gem-mist-light dark:border-gem-mist-dark text-center">
-                            <p className="text-sm opacity-70 mb-8 leading-relaxed whitespace-pre-wrap">{technicalDetails}</p>
+                            <p className="text-sm opacity-70 mb-8 leading-relaxed whitespace-pre-wrap font-bold">{technicalDetails}</p>
                             <div className="flex gap-4 justify-center">
-                                <button onClick={() => setStatus(AppStatus.AdminDashboard)} className="bg-gem-teal text-white px-8 py-4 rounded-2xl font-black">Admin Dashboard</button>
-                                <button onClick={() => setStatus(AppStatus.Welcome)} className="bg-gem-mist-light dark:bg-gem-mist-dark px-8 py-4 rounded-2xl font-black">Back</button>
+                                <button onClick={() => setStatus(AppStatus.AdminDashboard)} className="bg-gem-teal text-white px-8 py-4 rounded-2xl font-black shadow-lg">Go to Admin Dashboard</button>
+                                <button onClick={() => { setStatus(AppStatus.Welcome); setError(null); }} className="bg-gem-mist-light dark:bg-gem-mist-dark px-8 py-4 rounded-2xl font-black">Retry Welcome</button>
                             </div>
                         </div>
                     </div>

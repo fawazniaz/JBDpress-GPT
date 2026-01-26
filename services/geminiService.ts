@@ -20,14 +20,25 @@ async function delay(ms: number): Promise<void> {
 }
 
 /**
- * Fetches all raw files currently in the project storage (the real quota consumers).
+ * Exhaustively fetches all raw files in the project, handling pagination.
  */
 export async function listAllCloudFiles(): Promise<CloudFile[]> {
     const ai = new GoogleGenAI({ apiKey: process.env.API_KEY }) as any;
     if (!ai.files) return [];
+    
+    let allFiles: CloudFile[] = [];
+    let pageToken: string | undefined = undefined;
+    
     try {
-        const res = await ai.files.list();
-        return res.files || [];
+        do {
+            const res: any = await ai.files.list({ pageToken, pageSize: 100 });
+            if (res.files) {
+                allFiles = [...allFiles, ...res.files];
+            }
+            pageToken = res.nextPageToken;
+        } while (pageToken);
+        
+        return allFiles;
     } catch (e) {
         console.error("Failed to list raw files:", e);
         return [];
@@ -40,16 +51,28 @@ export async function deleteRawFile(fileName: string): Promise<void> {
     await ai.files.delete({ name: fileName });
 }
 
+/**
+ * Exhaustively fetches all modules (RAG Stores), handling pagination.
+ */
 export async function listAllModules(): Promise<TextbookModule[]> {
     const localData = getLocalRepository();
+    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY }) as any;
+    if (!ai.fileSearchStores) return localData;
+
+    let allStores: any[] = [];
+    let pageToken: string | undefined = undefined;
+
     try {
-        const ai = new GoogleGenAI({ apiKey: process.env.API_KEY }) as any;
-        if (!ai.fileSearchStores) return localData;
+        // 1. Fetch all stores across all pages
+        do {
+            const cloudResponse: any = await ai.fileSearchStores.list({ pageToken, pageSize: 50 });
+            const stores = cloudResponse.fileSearchStores || cloudResponse.stores || [];
+            allStores = [...allStores, ...stores];
+            pageToken = cloudResponse.nextPageToken;
+        } while (pageToken);
 
-        const cloudResponse: any = await ai.fileSearchStores.list();
-        const cloudStores = cloudResponse.fileSearchStores || cloudResponse.stores || [];
-
-        const storeDetailPromises = cloudStores.map(async (s: any) => {
+        // 2. Fetch details for each store
+        const storeDetailPromises = allStores.map(async (s: any) => {
             try {
                 const filesRes: any = await ai.fileSearchStores.listFilesSearchStoreFiles({ 
                     fileSearchStoreName: s.name 
@@ -69,6 +92,7 @@ export async function listAllModules(): Promise<TextbookModule[]> {
         localStorage.setItem(STABLE_REGISTRY_KEY, JSON.stringify(results));
         return results;
     } catch (err) {
+        console.warn("Module Sync Interrupted:", err);
         return localData;
     }
 }
@@ -87,10 +111,13 @@ export async function uploadToRagStore(ragStoreName: string, file: File): Promis
     });
     
     let attempts = 0;
-    while (attempts < 30) {
+    while (attempts < 40) {
         await delay(3000);
         const currentOp: any = await ai.operations.get({ name: op.name });
-        if (currentOp?.done) break;
+        if (currentOp?.done) {
+            if (currentOp.error) throw new Error(currentOp.error.message);
+            break;
+        }
         attempts++;
     }
 }
@@ -125,7 +152,7 @@ export async function fileSearch(ragStoreName: string, query: string, method: st
         }
     });
     return {
-        text: response.text || "No relevant data found.",
+        text: response.text || "No relevant data found in textbooks.",
         groundingChunks: response.candidates?.[0]?.groundingMetadata?.groundingChunks || [],
     };
 }
@@ -135,7 +162,7 @@ export async function generateExampleQuestions(ragStoreName: string): Promise<st
         const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
         const response = await ai.models.generateContent({
             model: 'gemini-3-flash-preview',
-            contents: 'Suggest 3 questions.',
+            contents: 'Suggest 3 textbook questions.',
             config: {
                 tools: [{ fileSearch: { fileSearchStoreNames: [ragStoreName] } } as any],
                 responseMimeType: 'application/json',
@@ -143,10 +170,9 @@ export async function generateExampleQuestions(ragStoreName: string): Promise<st
             }
         });
         return JSON.parse(response.text || "[]");
-    } catch { return ["Analyze key concepts."]; }
+    } catch { return ["Analyze the core concepts."]; }
 }
 
-// Fixed connectLive to accept a pedagogical method and include it in system instructions, matching ChatInterface call signature.
 export async function connectLive(callbacks: any, method: string = 'standard'): Promise<any> {
     const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
     return ai.live.connect({
@@ -155,7 +181,7 @@ export async function connectLive(callbacks: any, method: string = 'standard'): 
         config: {
             responseModalities: [Modality.AUDIO],
             speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Puck' } } },
-            systemInstruction: `You are a helpful textbook tutor using the ${method} pedagogical style. Provide educational support based on context provided.`,
+            systemInstruction: `You are a textbook tutor using ${method} style.`,
         }
     });
 }
