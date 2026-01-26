@@ -64,13 +64,7 @@ const App: React.FC = () => {
         }
     }, []);
 
-    useEffect(() => {
-        if ((status === AppStatus.Welcome || status === AppStatus.Chatting) && isApiKeySelected && globalTextbooks.length === 0) {
-            fetchLibrary();
-        }
-    }, [status, isApiKeySelected]);
-
-    const fetchLibrary = async (force: boolean = false) => {
+    const fetchLibrary = useCallback(async (force: boolean = false) => {
         if (isLibraryLoading && !force) return;
         setIsLibraryLoading(true);
         setApiKeyError(null);
@@ -78,7 +72,7 @@ const App: React.FC = () => {
         try {
             const modules = await geminiService.listAllModules();
             
-            // Final UI-side deduplication safeguard
+            // UI-side deduplication safeguard
             const uniqueModulesMap = new Map();
             modules.forEach(m => {
                 if (!uniqueModulesMap.has(m.storeName)) {
@@ -86,20 +80,26 @@ const App: React.FC = () => {
                 }
             });
             
-            setGlobalTextbooks(Array.from(uniqueModulesMap.values()));
+            const uniqueList = Array.from(uniqueModulesMap.values());
+            setGlobalTextbooks(uniqueList);
             
-            if (modules.length > 0) {
+            if (uniqueList.length > 0) {
                 setError(null);
                 if (status === AppStatus.Error) setStatus(AppStatus.Welcome);
             }
         } catch (err: any) {
             console.error("Library Sync Error:", err);
-            const msg = err.message || "Unknown error";
-            setApiKeyError(`Sync: ${msg}`);
+            setApiKeyError(`Sync: ${err.message || "Unknown error"}`);
         } finally {
             setIsLibraryLoading(false);
         }
-    };
+    }, [isLibraryLoading, status]);
+
+    useEffect(() => {
+        if ((status === AppStatus.Welcome || status === AppStatus.Chatting) && isApiKeySelected) {
+            fetchLibrary();
+        }
+    }, [status, isApiKeySelected, fetchLibrary]);
 
     const toggleDarkMode = () => {
         setIsDarkMode(prev => {

@@ -5,7 +5,7 @@
 import { GoogleGenAI, GenerateContentResponse, Type, Modality, LiveServerMessage } from "@google/genai";
 import { QueryResult, TextbookModule } from '../types';
 
-const LOCAL_REGISTRY_KEY = 'jbdpress_stores_v1';
+const LOCAL_REGISTRY_KEY = 'jbdpress_stores_v2'; // Bumped version for fresh state
 
 /**
  * Delay helper
@@ -15,7 +15,7 @@ async function delay(ms: number): Promise<void> {
 }
 
 /**
- * Robustly fetches all RAG stores.
+ * Robustly fetches all RAG stores and merges with local memory to prevent "vanishing" repositories.
  */
 export async function listAllModules(): Promise<TextbookModule[]> {
     try {
@@ -26,34 +26,48 @@ export async function listAllModules(): Promise<TextbookModule[]> {
             return JSON.parse(localStorage.getItem(LOCAL_REGISTRY_KEY) || '[]');
         }
 
-        const response: any = await ai.fileSearchStores.list();
-        const cloudStores = response.fileSearchStores || response.stores || (Array.isArray(response) ? response : []);
+        // 1. Get current local state (fallback)
+        const localCache: TextbookModule[] = JSON.parse(localStorage.getItem(LOCAL_REGISTRY_KEY) || '[]');
+        const registryMap = new Map<string, TextbookModule>();
+        localCache.forEach(m => registryMap.set(m.storeName, m));
 
-        const modules: TextbookModule[] = await Promise.all(cloudStores.map(async (s: any) => {
-            try {
-                const filesResponse: any = await ai.fileSearchStores.listFilesSearchStoreFiles({
-                    fileSearchStoreName: s.name
+        // 2. Attempt Cloud Fetch
+        try {
+            const response: any = await ai.fileSearchStores.list();
+            const cloudStores = response.fileSearchStores || response.stores || (Array.isArray(response) ? response : []);
+
+            for (const s of cloudStores) {
+                // Fetch files for this store to ensure book list is fresh
+                let bookList: string[] = [];
+                try {
+                    const filesRes: any = await ai.fileSearchStores.listFilesSearchStoreFiles({
+                        fileSearchStoreName: s.name
+                    });
+                    const files = filesRes.fileSearchStoreFiles || filesRes.files || (Array.isArray(filesRes) ? filesRes : []);
+                    bookList = files.map((f: any) => f.displayName || 'Unnamed File');
+                } catch (e) {
+                    // Fallback to existing local book list if file fetch fails
+                    bookList = registryMap.get(s.name)?.books || ['Syncing files...'];
+                }
+
+                registryMap.set(s.name, {
+                    name: s.displayName || 'Untitled Module',
+                    storeName: s.name,
+                    books: Array.from(new Set(bookList)) // Deduplicate books
                 });
-                const files = filesResponse.fileSearchStoreFiles || filesResponse.files || (Array.isArray(filesResponse) ? filesResponse : []);
-                return {
-                    name: s.displayName || 'Untitled Module',
-                    storeName: s.name,
-                    books: files.map((f: any) => f.displayName || 'Unnamed File')
-                };
-            } catch (e) {
-                return {
-                    name: s.displayName || 'Untitled Module',
-                    storeName: s.name,
-                    books: ['Syncing...']
-                };
             }
-        }));
+        } catch (cloudErr) {
+            console.warn("Cloud Sync failed, using local cache only.", cloudErr);
+        }
 
-        if (modules.length > 0) {
-            localStorage.setItem(LOCAL_REGISTRY_KEY, JSON.stringify(modules));
+        const finalModules = Array.from(registryMap.values());
+        
+        // Save cleaned state
+        if (finalModules.length > 0) {
+            localStorage.setItem(LOCAL_REGISTRY_KEY, JSON.stringify(finalModules));
         }
         
-        return modules.length > 0 ? modules : JSON.parse(localStorage.getItem(LOCAL_REGISTRY_KEY) || '[]');
+        return finalModules;
     } catch (err) {
         console.error("listAllModules Error:", err);
         return JSON.parse(localStorage.getItem(LOCAL_REGISTRY_KEY) || '[]');
@@ -63,7 +77,14 @@ export async function listAllModules(): Promise<TextbookModule[]> {
 export async function createRagStore(displayName: string): Promise<string> {
     const ai = new GoogleGenAI({ apiKey: process.env.API_KEY }) as any;
     const ragStore: any = await ai.fileSearchStores.create({ config: { displayName } });
-    return ragStore.name || "";
+    const storeName = ragStore.name || "";
+    
+    // Immediately add to local cache so it shows up
+    const localCache: TextbookModule[] = JSON.parse(localStorage.getItem(LOCAL_REGISTRY_KEY) || '[]');
+    localCache.push({ name: displayName, storeName: storeName, books: ['Preparing cloud storage...'] });
+    localStorage.setItem(LOCAL_REGISTRY_KEY, JSON.stringify(localCache));
+    
+    return storeName;
 }
 
 export async function uploadToRagStore(ragStoreName: string, file: File): Promise<void> {
@@ -76,13 +97,24 @@ export async function uploadToRagStore(ragStoreName: string, file: File): Promis
     if (!op || !op.name) throw new Error("Upload failed.");
     
     let done = false;
-    while (!done) {
+    let attempts = 0;
+    while (!done && attempts < 20) {
         await delay(5000);
         const currentOp: any = await ai.operations.get({ name: op.name });
         if (currentOp?.done) {
             if (currentOp.error) throw new Error(currentOp.error.message);
             done = true;
         }
+        attempts++;
+    }
+
+    // Refresh local cache for this specific module
+    const localCache: TextbookModule[] = JSON.parse(localStorage.getItem(LOCAL_REGISTRY_KEY) || '[]');
+    const idx = localCache.findIndex(m => m.storeName === ragStoreName);
+    if (idx !== -1) {
+        const existingBooks = localCache[idx].books.filter(b => !b.includes('...'));
+        localCache[idx].books = Array.from(new Set([...existingBooks, file.name]));
+        localStorage.setItem(LOCAL_REGISTRY_KEY, JSON.stringify(localCache));
     }
 }
 
@@ -119,7 +151,7 @@ export async function fileSearch(
     });
 
     return {
-        text: response.text || "No response.",
+        text: response.text || "No response found in materials.",
         groundingChunks: response.candidates?.[0]?.groundingMetadata?.groundingChunks || [],
     };
 }
@@ -129,7 +161,7 @@ export async function generateExampleQuestions(ragStoreName: string): Promise<st
         const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
         const response = await ai.models.generateContent({
             model: 'gemini-3-flash-preview',
-            contents: 'List 3 study questions.',
+            contents: 'List 3 study questions based on these materials.',
             config: {
                 tools: [{ fileSearch: { fileSearchStoreNames: [ragStoreName] } } as any],
                 responseMimeType: 'application/json',
@@ -141,7 +173,7 @@ export async function generateExampleQuestions(ragStoreName: string): Promise<st
         });
         return JSON.parse(response.text || "[]");
     } catch (err) {
-        return ["What are the key concepts?"];
+        return ["What are the main topics discussed?", "Summarize the key takeaways.", "Explain the core concepts."];
     }
 }
 
