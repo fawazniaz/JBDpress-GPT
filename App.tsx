@@ -69,25 +69,36 @@ const App: React.FC = () => {
         loadingRef.current = true;
         setIsLibraryLoading(true);
         setSyncError(null);
+        
         try {
-            const [modules, rawFiles] = await Promise.all([
+            // Use allSettled so one quota failure doesn't block the entire UI
+            const results = await Promise.allSettled([
                 geminiService.listAllModules(),
                 geminiService.listAllCloudFiles()
             ]);
-            setGlobalTextbooks(modules);
-            setCloudFiles(rawFiles);
-        } catch (err: any) {
-            console.warn("Background Sync Warning:", err);
-            const msg = err.message || "";
-            if (msg.includes("RESOURCE_EXHAUSTED") || msg.includes("429")) {
-                if (msg.toLowerCase().includes("quota") || msg.toLowerCase().includes("storage")) {
-                    setSyncError("Cloud storage is currently showing as full. Management is still possible.");
-                } else {
-                    setSyncError("Rate limit reached. Data display may be incomplete.");
-                }
+
+            if (results[0].status === 'fulfilled') {
+                setGlobalTextbooks(results[0].value);
             } else {
-                setSyncError("Sync interrupted. Check connection.");
+                console.warn("Module Sync Error:", results[0].reason);
+                setSyncError("Modules unavailable. Cloud may be busy.");
             }
+
+            if (results[1].status === 'fulfilled') {
+                setCloudFiles(results[1].value);
+            } else {
+                console.warn("Files Sync Error:", results[1].reason);
+                setSyncError(prev => prev ? prev + " Files unavailable." : "Files unavailable.");
+            }
+
+            // If both failed with quota errors, show a clearer warning
+            const bothFailed = results.every(r => r.status === 'rejected');
+            if (bothFailed) {
+                setSyncError("Cloud connection throttled. Retrying in 30s...");
+            }
+        } catch (err: any) {
+            console.error("Critical Sync Error:", err);
+            setSyncError("Network error during synchronization.");
         } finally {
             setIsLibraryLoading(false);
             loadingRef.current = false;
@@ -111,14 +122,12 @@ const App: React.FC = () => {
         console.error("Operation Failure:", err);
         let errMsg = err.message || "An unexpected error occurred.";
         
+        // CHECK: If it's a quota/rate limit error, DO NOT block the UI
         if (errMsg.includes("RESOURCE_EXHAUSTED") || errMsg.includes("429")) {
-            if (errMsg.toLowerCase().includes("storage") || errMsg.toLowerCase().includes("quota")) {
-                customTitle = "Storage Limit Reached";
-                errMsg = "Your 1GB free cloud quota is full. Purge existing data to continue.";
-            } else {
-                customTitle = "System Throttled";
-                errMsg = "Too many requests. Please wait 60 seconds.";
-            }
+            const isStorage = errMsg.toLowerCase().includes("storage") || errMsg.toLowerCase().includes("quota");
+            setSyncError(isStorage ? "Cloud storage limit reported. Waiting for sync..." : "System throttled. Please wait a moment.");
+            setIsLibraryLoading(false);
+            return; // EXIT: Do not set AppStatus.Error
         }
 
         setError(customTitle || "Operation Error");
@@ -142,6 +151,7 @@ const App: React.FC = () => {
             setStatus(AppStatus.Welcome);
         } catch (err: any) { 
             handleError(err, "Upload Blocked"); 
+            setStatus(AppStatus.Welcome); // Return home even on failure
         } finally { 
             setUploadProgress(null); 
         }
@@ -166,24 +176,27 @@ const App: React.FC = () => {
     };
 
     const handlePurgeAll = async () => {
-        if (!confirm("Are you sure? This deletes ALL data to clear your 1GB quota.")) return;
+        if (!confirm("NUCLEAR PURGE: This will attempt to force-delete every visible cloud file. Continue?")) return;
         setIsLibraryLoading(true);
+        setSyncError("Purge in progress... Please wait.");
         try {
+            // Sequential deletion with longer delays to ensure we don't trigger 429
             for (const store of globalTextbooks) {
                 await geminiService.deleteRagStore(store.storeName);
-                await new Promise(r => setTimeout(r, 600));
+                await new Promise(r => setTimeout(r, 1000));
             }
             for (const file of cloudFiles) {
                 await geminiService.deleteRawFile(file.name);
-                await new Promise(r => setTimeout(r, 600));
+                await new Promise(r => setTimeout(r, 1000));
             }
             localStorage.removeItem('JBDPRESS_STABLE_REGISTRY_FINAL');
-            await new Promise(r => setTimeout(r, 1500));
+            setGlobalTextbooks([]);
+            setCloudFiles([]);
+            alert("Purge request sent. It can take up to 2-3 minutes for the cloud backend to actually release the quota. Please wait before uploading.");
             await fetchLibrary(true);
-            alert("Purge complete. Storage stats may take 120s to reflect on server.");
         } catch (err: any) { 
             console.error("Purge Error:", err);
-            alert("Some items failed to delete due to rate limits. Try again in 30 seconds.");
+            setSyncError("Purge was throttled. Some files may remain.");
         } finally { 
             setIsLibraryLoading(false); 
         }
@@ -261,8 +274,8 @@ const App: React.FC = () => {
                         <div className="max-w-xl p-8 bg-white dark:bg-gem-slate-dark rounded-[30px] shadow-2xl border border-gem-mist-light dark:border-gem-mist-dark text-center">
                             <p className="text-sm opacity-70 mb-8 leading-relaxed font-bold">{technicalDetails}</p>
                             <div className="flex gap-4 justify-center">
-                                <button onClick={() => setStatus(AppStatus.AdminDashboard)} className="bg-gem-teal text-white px-8 py-4 rounded-2xl font-black shadow-lg">Go to Admin Dashboard</button>
-                                <button onClick={() => { setStatus(AppStatus.Welcome); setError(null); fetchLibrary(true); }} className="bg-gem-mist-light dark:bg-gem-mist-dark px-8 py-4 rounded-2xl font-black">Force Return Home</button>
+                                <button onClick={() => setStatus(AppStatus.AdminDashboard)} className="bg-gem-teal text-white px-8 py-4 rounded-2xl font-black shadow-lg">Admin Dashboard</button>
+                                <button onClick={() => { setStatus(AppStatus.Welcome); setError(null); fetchLibrary(true); }} className="bg-gem-mist-light dark:bg-gem-mist-dark px-8 py-4 rounded-2xl font-black">Ignore & Return Home</button>
                             </div>
                         </div>
                     </div>
