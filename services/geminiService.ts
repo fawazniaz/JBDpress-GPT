@@ -3,100 +3,80 @@
  * @license
  * SPDX-License-Identifier: Apache-2.0
 */
-import { GoogleGenAI, GenerateContentResponse, Type, Modality, LiveServerMessage } from "@google/genai";
-import { QueryResult, TextbookModule } from '../types';
+import { GoogleGenAI, GenerateContentResponse, Type, Modality } from "@google/genai";
+import { QueryResult, TextbookModule, CloudFile } from '../types';
 
 const STABLE_REGISTRY_KEY = 'JBDPRESS_STABLE_REGISTRY_FINAL';
 
 function getLocalRepository(): TextbookModule[] {
-    const registryMap = new Map<string, TextbookModule>();
     try {
-        const currentStable = JSON.parse(localStorage.getItem(STABLE_REGISTRY_KEY) || '[]');
-        currentStable.forEach((m: TextbookModule) => {
-            if (m && m.storeName) registryMap.set(m.storeName, m);
-        });
-    } catch (e) {}
-    return Array.from(registryMap.values());
+        const data = JSON.parse(localStorage.getItem(STABLE_REGISTRY_KEY) || '[]');
+        return Array.isArray(data) ? data : [];
+    } catch (e) { return []; }
 }
 
 async function delay(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/**
+ * Fetches all raw files currently in the project storage (the real quota consumers).
+ */
+export async function listAllCloudFiles(): Promise<CloudFile[]> {
+    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY }) as any;
+    if (!ai.files) return [];
+    try {
+        const res = await ai.files.list();
+        return res.files || [];
+    } catch (e) {
+        console.error("Failed to list raw files:", e);
+        return [];
+    }
+}
+
+export async function deleteRawFile(fileName: string): Promise<void> {
+    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY }) as any;
+    if (!ai.files) return;
+    await ai.files.delete({ name: fileName });
+}
+
 export async function listAllModules(): Promise<TextbookModule[]> {
     const localData = getLocalRepository();
-    const registryMap = new Map<string, TextbookModule>();
-    localData.forEach(m => registryMap.set(m.storeName, m));
-
     try {
         const ai = new GoogleGenAI({ apiKey: process.env.API_KEY }) as any;
         if (!ai.fileSearchStores) return localData;
 
-        // More generous timeout for deep sync
-        const cloudResponse: any = await Promise.race([
-            ai.fileSearchStores.list(),
-            new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout")), 12000))
-        ]).catch(() => ({ fileSearchStores: [] }));
-
-        const cloudStores = cloudResponse.fileSearchStores || cloudResponse.stores || (Array.isArray(cloudResponse) ? cloudResponse : []);
+        const cloudResponse: any = await ai.fileSearchStores.list();
+        const cloudStores = cloudResponse.fileSearchStores || cloudResponse.stores || [];
 
         const storeDetailPromises = cloudStores.map(async (s: any) => {
             try {
                 const filesRes: any = await ai.fileSearchStores.listFilesSearchStoreFiles({ 
                     fileSearchStoreName: s.name 
-                }).catch(() => ({ fileSearchStoreFiles: [] }));
-                
+                });
                 const files = filesRes.fileSearchStoreFiles || filesRes.files || [];
-                const bookNames = files.map((f: any) => f.displayName || f.name || 'Unnamed File');
-
                 return {
-                    name: s.displayName || s.name.split('/').pop() || 'Unnamed Module',
+                    name: s.displayName || s.name.split('/').pop(),
                     storeName: s.name,
-                    books: Array.from(new Set(bookNames))
+                    books: files.map((f: any) => f.displayName || f.name)
                 };
             } catch (e) {
-                return registryMap.get(s.name) || {
-                    name: s.displayName || 'Untitled Module',
-                    storeName: s.name,
-                    books: ['Sync error - Cache only']
-                };
+                return { name: s.displayName || s.name, storeName: s.name, books: [] };
             }
         });
 
-        const cloudResults = await Promise.all(storeDetailPromises);
-        cloudResults.forEach(res => {
-            if (res && res.storeName) registryMap.set(res.storeName, res);
-        });
-
-        const finalResults = Array.from(registryMap.values());
-        localStorage.setItem(STABLE_REGISTRY_KEY, JSON.stringify(finalResults));
-        return finalResults;
+        const results = await Promise.all(storeDetailPromises);
+        localStorage.setItem(STABLE_REGISTRY_KEY, JSON.stringify(results));
+        return results;
     } catch (err) {
-        console.warn("Cloud Sync Limited:", err);
         return localData;
     }
 }
 
 export async function createRagStore(displayName: string): Promise<string> {
     const ai = new GoogleGenAI({ apiKey: process.env.API_KEY }) as any;
-    const tempStoreName = `pending_${Date.now()}`;
-    const local = getLocalRepository();
-    local.push({ name: displayName, storeName: tempStoreName, books: ['Creating...'] });
-    localStorage.setItem(STABLE_REGISTRY_KEY, JSON.stringify(local));
-
-    try {
-        const ragStore: any = await ai.fileSearchStores.create({ config: { displayName } });
-        const realName = ragStore.name || "";
-        const updated = getLocalRepository().map(m => 
-            m.storeName === tempStoreName ? { ...m, storeName: realName, books: [] } : m
-        );
-        localStorage.setItem(STABLE_REGISTRY_KEY, JSON.stringify(updated));
-        return realName;
-    } catch (err) {
-        const rolledBack = getLocalRepository().filter(m => m.storeName !== tempStoreName);
-        localStorage.setItem(STABLE_REGISTRY_KEY, JSON.stringify(rolledBack));
-        throw err;
-    }
+    const ragStore: any = await ai.fileSearchStores.create({ config: { displayName } });
+    return ragStore.name;
 }
 
 export async function uploadToRagStore(ragStoreName: string, file: File): Promise<void> {
@@ -105,17 +85,12 @@ export async function uploadToRagStore(ragStoreName: string, file: File): Promis
         fileSearchStoreName: ragStoreName,
         file: file
     });
-
-    if (!op || !op.name) throw new Error("Upload failed to start.");
     
     let attempts = 0;
     while (attempts < 30) {
         await delay(3000);
         const currentOp: any = await ai.operations.get({ name: op.name });
-        if (currentOp?.done) {
-            if (currentOp.error) throw new Error(currentOp.error.message);
-            break;
-        }
+        if (currentOp?.done) break;
         attempts++;
     }
 }
@@ -131,43 +106,26 @@ export async function deleteRagStore(storeName: string): Promise<void> {
 
 export async function deleteFileFromStore(storeName: string, fileName: string): Promise<void> {
     const ai = new GoogleGenAI({ apiKey: process.env.API_KEY }) as any;
-    try {
-        // Find the file reference first
-        const filesRes: any = await ai.fileSearchStores.listFilesSearchStoreFiles({ 
-            fileSearchStoreName: storeName 
-        });
-        const files = filesRes.fileSearchStoreFiles || filesRes.files || [];
-        const fileToDelete = files.find((f: any) => f.displayName === fileName || f.name.includes(fileName));
-        
-        if (fileToDelete) {
-            await ai.fileSearchStores.deleteFileSearchStoreFile({ 
-                fileSearchStoreFileName: fileToDelete.name 
-            });
-        }
-    } catch (e) {
-        throw new Error(`Failed to delete cloud file: ${e.message}`);
+    const filesRes: any = await ai.fileSearchStores.listFilesSearchStoreFiles({ fileSearchStoreName: storeName });
+    const files = filesRes.fileSearchStoreFiles || filesRes.files || [];
+    const fileToDelete = files.find((f: any) => f.displayName === fileName || f.name.includes(fileName));
+    if (fileToDelete) {
+        await ai.fileSearchStores.deleteFileSearchStoreFile({ fileSearchStoreFileName: fileToDelete.name });
     }
 }
 
-const BASE_GROUNDING_INSTRUCTION = `You are JBDPRESS_GPT, a strict RAG-based Textbook Tutor. 
-Answer ONLY using the uploaded textbooks. Do not use outside knowledge.`;
-
 export async function fileSearch(ragStoreName: string, query: string, method: string = 'standard', useFastMode: boolean = false, bookFocus?: string): Promise<QueryResult> {
     const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-    let instruction = BASE_GROUNDING_INSTRUCTION;
-    if (bookFocus) { instruction += `\nFOCUS: Only use: "${bookFocus}".`; }
-    
     const response: GenerateContentResponse = await ai.models.generateContent({
         model: 'gemini-3-flash-preview',
         contents: query,
         config: {
-            systemInstruction: instruction,
+            systemInstruction: `You are a textbook tutor. Only use uploaded material. Method: ${method}`,
             tools: [{ fileSearch: { fileSearchStoreNames: [ragStoreName] } } as any]
         }
     });
-
     return {
-        text: response.text || "I apologize, but this is not in the textbooks.",
+        text: response.text || "No relevant data found.",
         groundingChunks: response.candidates?.[0]?.groundingMetadata?.groundingChunks || [],
     };
 }
@@ -177,7 +135,7 @@ export async function generateExampleQuestions(ragStoreName: string): Promise<st
         const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
         const response = await ai.models.generateContent({
             model: 'gemini-3-flash-preview',
-            contents: 'Suggest 3 study questions.',
+            contents: 'Suggest 3 questions.',
             config: {
                 tools: [{ fileSearch: { fileSearchStoreNames: [ragStoreName] } } as any],
                 responseMimeType: 'application/json',
@@ -185,11 +143,10 @@ export async function generateExampleQuestions(ragStoreName: string): Promise<st
             }
         });
         return JSON.parse(response.text || "[]");
-    } catch (err) {
-        return ["What are the key concepts?"];
-    }
+    } catch { return ["Analyze key concepts."]; }
 }
 
+// Fixed connectLive to accept a pedagogical method and include it in system instructions, matching ChatInterface call signature.
 export async function connectLive(callbacks: any, method: string = 'standard'): Promise<any> {
     const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
     return ai.live.connect({
@@ -197,10 +154,8 @@ export async function connectLive(callbacks: any, method: string = 'standard'): 
         callbacks,
         config: {
             responseModalities: [Modality.AUDIO],
-            systemInstruction: BASE_GROUNDING_INSTRUCTION,
-            outputAudioTranscription: {},
-            inputAudioTranscription: {},
-            speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Puck' } } }
+            speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Puck' } } },
+            systemInstruction: `You are a helpful textbook tutor using the ${method} pedagogical style. Provide educational support based on context provided.`,
         }
     });
 }

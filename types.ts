@@ -17,35 +17,24 @@ export interface User {
     registeredAt: number;
 }
 
-export interface CustomMetadata {
-  key?: string;
-  stringValue?: string;
-  stringListValue?: string[];
-  numericValue?: number;
-}
-
-export interface Document {
+export interface CloudFile {
     name: string;
     displayName: string;
-    customMetadata?: CustomMetadata[];
+    sizeBytes: string;
+    createTime: string;
 }
 
-export interface GroundingChunk {
-    retrievedContext?: {
-        text?: string;
-    };
-}
-
-export interface QueryResult {
-    text: string;
-    groundingChunks: GroundingChunk[];
+export interface TextbookModule {
+    name: string;
+    storeName: string;
+    books: string[];
 }
 
 export enum AppStatus {
     Initializing,
     Login,
     Registering,
-    Welcome, // Admin Management or User Home
+    Welcome,
     Uploading,
     Chatting,
     AdminDashboard,
@@ -55,13 +44,11 @@ export enum AppStatus {
 export interface ChatMessage {
     role: 'user' | 'model';
     parts: { text: string }[];
-    groundingChunks?: GroundingChunk[];
 }
 
 export type PedagogicalMethod = 'standard' | 'blooms' | 'montessori' | 'pomodoro' | 'kindergarten' | 'lesson-plan';
 
-export interface TextbookModule {
-    name: string;
-    storeName: string;
-    books: string[];
+export interface QueryResult {
+    text: string;
+    groundingChunks: any[];
 }
