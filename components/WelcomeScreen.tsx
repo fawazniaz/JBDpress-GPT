@@ -43,6 +43,25 @@ const WelcomeScreen: React.FC<WelcomeScreenProps> = ({
                 </div>
             </header>
 
+            {/* Admin Health Alert Banner */}
+            {user.role === 'admin' && (
+                <div className="bg-amber-500 text-white px-6 py-3 flex justify-between items-center animate-in slide-in-from-top duration-500">
+                    <div className="flex items-center gap-3">
+                        <span className="text-xl">🛡️</span>
+                        <p className="text-xs font-bold uppercase tracking-wide">
+                            Maintenance Alert: Duplicate Files Detected in Sidebar. 
+                            <span className="hidden sm:inline opacity-80 font-normal normal-case ml-2">App logic is safe, but cleanup is recommended.</span>
+                        </p>
+                    </div>
+                    <button 
+                        onClick={onOpenDashboard}
+                        className="bg-white text-amber-600 px-4 py-1 rounded-full text-[10px] font-black hover:scale-105 transition-transform"
+                    >
+                        VIEW SAFETY CHECKLIST
+                    </button>
+                </div>
+            )}
+
             <div className="flex-grow overflow-y-auto p-6 lg:p-12">
                 <div className="max-w-5xl mx-auto grid grid-cols-1 lg:grid-cols-2 gap-12">
                     <div className="space-y-8">
@@ -82,7 +101,7 @@ const WelcomeScreen: React.FC<WelcomeScreenProps> = ({
                         </div>
 
                         {user.role === 'admin' && (
-                            <button onClick={onOpenDashboard} className="w-full p-4 bg-gem-teal text-white font-bold rounded-2xl flex items-center justify-center space-x-2">
+                            <button onClick={onOpenDashboard} className="w-full p-4 bg-gem-teal text-white font-bold rounded-2xl flex items-center justify-center space-x-2 shadow-lg hover:brightness-110 active:scale-95 transition-all">
                                 📊 <span>Admin Settings & Health Check</span>
                             </button>
                         )}
