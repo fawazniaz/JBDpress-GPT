@@ -1,3 +1,4 @@
+
 /**
  * @license
  * SPDX-License-Identifier: Apache-2.0
@@ -92,7 +93,7 @@ const App: React.FC = () => {
         if (status === AppStatus.Welcome && isApiKeySelected) {
             fetchLibrary();
         }
-    }, [status, isApiKeySelected]);
+    }, [status, isApiKeySelected, fetchLibrary]);
 
     const toggleDarkMode = () => {
         setIsDarkMode(prev => {
@@ -122,10 +123,9 @@ const App: React.FC = () => {
         console.error("Application Error:", err);
         let errMsg = err.message || "An unexpected error occurred.";
         
-        // Specifically handle storage limit error
         if (errMsg.includes("RESOURCE_EXHAUSTED") || errMsg.includes("429") || errMsg.includes("storage limit")) {
             customTitle = "Storage Limit Reached";
-            errMsg = "You have used your 1GB free storage limit for textbooks. \n\nTo upload new files, please delete some older course modules from your library or upgrade your Google Cloud quota tier.";
+            errMsg = "You have used your 1GB free storage limit for textbooks. \n\nTo upload new files, please go to 'Admin Dashboard' and delete some older course modules.";
         }
 
         setError(customTitle || "Operation Blocked");
@@ -220,7 +220,11 @@ const App: React.FC = () => {
                     />
                 );
             case AppStatus.AdminDashboard:
-                return <AdminDashboard onClose={() => setStatus(AppStatus.Welcome)} />;
+                return <AdminDashboard 
+                    textbooks={globalTextbooks} 
+                    onDeleteModule={handleDeleteModule} 
+                    onClose={() => setStatus(AppStatus.Welcome)} 
+                />;
             case AppStatus.Uploading:
                 return <ProgressBar progress={uploadProgress?.current || 0} total={uploadProgress?.total || 1} message={uploadProgress?.message || "Uploading..."} fileName={uploadProgress?.fileName} />;
             case AppStatus.Chatting:
