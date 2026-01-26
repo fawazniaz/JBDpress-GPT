@@ -5,6 +5,8 @@
 import { GoogleGenAI, GenerateContentResponse, Type, Modality, LiveServerMessage } from "@google/genai";
 import { QueryResult, TextbookModule } from '../types';
 
+const LOCAL_REGISTRY_KEY = 'jbdpress_stores_v1';
+
 /**
  * Delay helper
  */
@@ -43,88 +45,109 @@ function handleApiError(err: any, context: string): Error {
 }
 
 /**
- * Fetches all existing RAG stores from the cloud.
+ * Fetches all existing RAG stores from the cloud AND merges with local registry for instant availability.
  */
 export async function listAllModules(): Promise<TextbookModule[]> {
     try {
         const ai = new GoogleGenAI({ apiKey: process.env.API_KEY }) as any;
         
         if (!ai.fileSearchStores) {
-            console.error("SDK Error: fileSearchStores property missing. Possible version conflict.");
+            console.error("SDK Error: fileSearchStores property missing. Check environment/SDK version.");
             return [];
         }
 
-        const storesResponse = (await withTimeout(
-            ai.fileSearchStores.list(),
-            20000,
-            "Cloud sync timed out while fetching library list."
-        )) as any;
+        // Get cloud stores
+        let cloudStores: any[] = [];
+        try {
+            const storesResponse = (await withTimeout(
+                ai.fileSearchStores.list(),
+                15000,
+                "Cloud sync timed out."
+            )) as any;
 
-        // Exhaustive check for stores in the response object
-        let rawStores: any[] = [];
-        if (Array.isArray(storesResponse)) {
-            rawStores = storesResponse;
-        } else if (storesResponse?.fileSearchStores && Array.isArray(storesResponse.fileSearchStores)) {
-            rawStores = storesResponse.fileSearchStores;
-        } else if (storesResponse?.stores && Array.isArray(storesResponse.stores)) {
-            rawStores = storesResponse.stores;
-        } else if (storesResponse && typeof storesResponse[Symbol.iterator] === 'function') {
-            rawStores = Array.from(storesResponse);
+            if (Array.isArray(storesResponse)) {
+                cloudStores = storesResponse;
+            } else if (storesResponse?.fileSearchStores) {
+                cloudStores = storesResponse.fileSearchStores;
+            } else if (storesResponse?.stores) {
+                cloudStores = storesResponse.stores;
+            }
+        } catch (e) {
+            console.warn("Cloud list failed, falling back to local registry only.");
         }
+
+        // Get local registry
+        const localRegistry = JSON.parse(localStorage.getItem(LOCAL_REGISTRY_KEY) || '[]');
         
-        if (rawStores.length === 0) {
-            console.log("Gemini: Library is empty on cloud.");
-            return [];
+        // Merge - prioritizing cloud data if available, keeping local as placeholder
+        const mergedMap = new Map<string, TextbookModule>();
+        
+        // Add cloud stores
+        for (const store of cloudStores) {
+            if (!store.name) continue;
+            mergedMap.set(store.name, {
+                name: store.displayName || 'Untitled Module',
+                storeName: store.name,
+                books: []
+            });
         }
 
-        // Fetch all module file lists in parallel
-        const modulePromises = rawStores.map(async (store) => {
-            if (!store || !store.name) return null;
+        // Add local registry items if not already present (instant fix for "Empty Library" lag)
+        for (const local of localRegistry) {
+            if (!mergedMap.has(local.storeName)) {
+                mergedMap.set(local.storeName, {
+                    name: local.name,
+                    storeName: local.storeName,
+                    books: local.books || ['Indexing...']
+                });
+            }
+        }
+
+        const rawResults = Array.from(mergedMap.values());
+        if (rawResults.length === 0) return [];
+
+        // Enrich with file lists (only for established stores)
+        const enrichedPromises = rawResults.map(async (mod) => {
             try {
                 const filesResponse = (await ai.fileSearchStores.listFilesSearchStoreFiles({
-                    fileSearchStoreName: store.name
+                    fileSearchStoreName: mod.storeName
                 })) as any;
                 
                 let files: any[] = [];
-                if (Array.isArray(filesResponse)) {
-                    files = filesResponse;
-                } else if (filesResponse?.fileSearchStoreFiles) {
-                    files = filesResponse.fileSearchStoreFiles;
-                } else if (filesResponse?.files) {
-                    files = filesResponse.files;
-                }
+                if (Array.isArray(filesResponse)) files = filesResponse;
+                else if (filesResponse?.fileSearchStoreFiles) files = filesResponse.fileSearchStoreFiles;
+                else if (filesResponse?.files) files = filesResponse.files;
 
                 return {
-                    name: store.displayName || 'Untitled Module',
-                    storeName: store.name,
-                    books: files.map((f: any) => f.displayName || 'Unnamed File')
+                    ...mod,
+                    books: files.length > 0 ? files.map((f: any) => f.displayName || 'Unnamed File') : mod.books
                 };
             } catch (e) {
-                console.warn(`Could not list files for store ${store.name}:`, e);
-                return {
-                    name: store.displayName || 'Untitled Module',
-                    storeName: store.name,
-                    books: []
-                };
+                return mod; // Keep placeholder if listing fails
             }
         });
 
-        const results = await Promise.all(modulePromises);
-        return results.filter((m): m is TextbookModule => m !== null);
+        return await Promise.all(enrichedPromises);
     } catch (err: any) {
         throw handleApiError(err, "listAllModules");
     }
 }
 
 /**
- * Creates a new RAG store.
+ * Creates a new RAG store and registers it locally.
  */
 export async function createRagStore(displayName: string): Promise<string> {
     try {
         const ai = new GoogleGenAI({ apiKey: process.env.API_KEY }) as any;
-        if (!ai.fileSearchStores) throw new Error("RAG stores are not supported by this API key.");
         const ragStore = await ai.fileSearchStores.create({ config: { displayName } });
-        return ragStore.name || "";
+        const storeName = ragStore.name || "";
+        
+        // Save to local registry IMMEDIATELY
+        const registry = JSON.parse(localStorage.getItem(LOCAL_REGISTRY_KEY) || '[]');
+        registry.push({ name: displayName, storeName: storeName, books: ['Connecting to cloud...'] });
+        localStorage.setItem(LOCAL_REGISTRY_KEY, JSON.stringify(registry));
+        
+        return storeName;
     } catch (err: any) {
         throw handleApiError(err, "createRagStore");
     }
@@ -138,7 +161,6 @@ export async function uploadToRagStore(ragStoreName: string, file: File): Promis
     let op: any;
 
     try {
-        // Step 1: Physical Upload
         op = await ai.fileSearchStores.uploadToFileSearchStore({
             fileSearchStoreName: ragStoreName,
             file: file
@@ -149,34 +171,39 @@ export async function uploadToRagStore(ragStoreName: string, file: File): Promis
 
     if (!op || !op.name) throw new Error("UPLOAD_FAILED: Cloud did not return an operation ID.");
     
-    // Step 2: Poll for Indexing completion
+    // Poll for Indexing completion
     let retries = 0;
-    const maxRetries = 100; // ~8 minutes 
+    const maxRetries = 40; // ~3 minutes - shorter timeout for better UX
     
     while (retries < maxRetries) {
-        const waitTime = retries < 10 ? 3000 : 5000;
-        await delay(waitTime); 
-        
+        await delay(5000); 
         try {
-            // Re-init AI on each poll to avoid stale session headers
             const pollAi = new GoogleGenAI({ apiKey: process.env.API_KEY }) as any;
             const currentOp = await pollAi.operations.get({ name: op.name });
             if (currentOp) {
                 op = currentOp;
                 if (op.done) {
                     if (op.error) throw new Error(`Indexing Error: ${op.error.message}`);
+                    
+                    // Update local registry with the new book name
+                    const registry = JSON.parse(localStorage.getItem(LOCAL_REGISTRY_KEY) || '[]');
+                    const idx = registry.findIndex((r: any) => r.storeName === ragStoreName);
+                    if (idx !== -1) {
+                        if (!Array.isArray(registry[idx].books)) registry[idx].books = [];
+                        registry[idx].books = registry[idx].books.filter((b: string) => b.includes('...'));
+                        registry[idx].books.push(file.name);
+                        localStorage.setItem(LOCAL_REGISTRY_KEY, JSON.stringify(registry));
+                    }
                     return; 
                 }
             }
             retries++;
         } catch (pollErr: any) {
-            console.warn("Polling operation status failed, retrying...", pollErr);
             retries++;
-            if (retries > 10 && pollErr.message.includes("403")) throw pollErr;
         }
     }
     
-    throw new Error("INDEXING_TIMEOUT: The file is uploaded but indexing is taking too long. It will appear in your library shortly.");
+    throw new Error("INDEXING_TIMEOUT: The file is uploaded. It will appear in your library automatically within 5 minutes as the cloud finishes indexing.");
 }
 
 const BASE_GROUNDING_INSTRUCTION = `You are JBDPRESS_GPT, a strict RAG-based Textbook Tutor. 

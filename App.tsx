@@ -80,9 +80,10 @@ const App: React.FC = () => {
         try {
             const modules = await geminiService.listAllModules();
             setGlobalTextbooks(modules);
-            if (modules.length > 0 && error === "Indexing in Progress") {
+            // If we find textbooks, we're good to exit any error state
+            if (modules.length > 0) {
                 setError(null);
-                setStatus(AppStatus.Welcome);
+                if (status === AppStatus.Error) setStatus(AppStatus.Welcome);
             }
         } catch (err: any) {
             console.error("Cloud Sync Failed:", err);
@@ -180,7 +181,7 @@ const App: React.FC = () => {
                 await geminiService.uploadToRagStore(ragStoreName, files[i]);
             }
             
-            // Force hard sync after all uploads
+            // Hard sync after all uploads
             await fetchLibrary(true);
             setFiles([]);
             setStatus(AppStatus.Welcome);
@@ -268,7 +269,7 @@ const App: React.FC = () => {
                             <p className="font-bold text-gem-blue mb-4">Status Update:</p>
                             <p className="text-sm opacity-70 mb-6 leading-relaxed">{technicalDetails}</p>
                             <button 
-                                onClick={() => { setStatus(AppStatus.Welcome); setError(null); setGlobalTextbooks([]); fetchLibrary(true); }} 
+                                onClick={() => { setStatus(AppStatus.Welcome); setError(null); fetchLibrary(true); }} 
                                 className="bg-gem-blue text-white px-10 py-3 rounded-xl font-black shadow-lg hover:scale-105 active:scale-95 transition-all"
                             >
                                 {error === "Indexing in Progress" ? 'Back to Library' : 'Try Again'}
