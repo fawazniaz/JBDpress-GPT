@@ -36,7 +36,7 @@ function handleApiError(err: any, context: string): Error {
     }
 
     if (err instanceof TypeError && (message.includes("fetch") || message.includes("NetworkError"))) {
-        return new Error("NETWORK_ERROR: The connection was interrupted. Large files require a stable connection.");
+        return new Error("NETWORK_ERROR: The connection was interrupted. Check your internet connection.");
     }
     
     return new Error(`${context} failed: ${message}`);
@@ -47,6 +47,7 @@ function handleApiError(err: any, context: string): Error {
  */
 export async function listAllModules(): Promise<TextbookModule[]> {
     try {
+        // ALWAYS use a fresh instance to ensure the latest API key from process.env is used.
         const ai = new GoogleGenAI({ apiKey: process.env.API_KEY }) as any;
         
         if (!ai.fileSearchStores) {
@@ -54,7 +55,6 @@ export async function listAllModules(): Promise<TextbookModule[]> {
             return [];
         }
 
-        // Fetch stores with a 30s timeout
         const storesResponse = (await withTimeout(
             ai.fileSearchStores.list(),
             30000,
@@ -63,21 +63,19 @@ export async function listAllModules(): Promise<TextbookModule[]> {
 
         const modules: TextbookModule[] = [];
         
-        // Robust detection of stores: check for fileSearchStores, stores, or direct array
+        // Robust detection: check all possible names for the stores list
         let stores: any[] = [];
         if (Array.isArray(storesResponse)) {
             stores = storesResponse;
-        } else if (storesResponse && storesResponse.fileSearchStores) {
+        } else if (storesResponse?.fileSearchStores) {
             stores = storesResponse.fileSearchStores;
-        } else if (storesResponse && storesResponse.stores) {
+        } else if (storesResponse?.stores) {
             stores = storesResponse.stores;
-        } else if (storesResponse && typeof (storesResponse as any)[Symbol.iterator] === 'function') {
-            stores = Array.from(storesResponse as any);
+        } else if (storesResponse && typeof storesResponse[Symbol.iterator] === 'function') {
+            stores = Array.from(storesResponse);
         }
         
-        if (stores.length === 0) {
-            return [];
-        }
+        if (stores.length === 0) return [];
 
         for (const store of stores) {
             try {
@@ -85,13 +83,12 @@ export async function listAllModules(): Promise<TextbookModule[]> {
                     fileSearchStoreName: store.name!
                 })) as any;
                 
-                // Robust detection of files
                 let files: any[] = [];
                 if (Array.isArray(filesResponse)) {
                     files = filesResponse;
-                } else if (filesResponse && filesResponse.fileSearchStoreFiles) {
+                } else if (filesResponse?.fileSearchStoreFiles) {
                     files = filesResponse.fileSearchStoreFiles;
-                } else if (filesResponse && filesResponse.files) {
+                } else if (filesResponse?.files) {
                     files = filesResponse.files;
                 }
 
@@ -102,7 +99,6 @@ export async function listAllModules(): Promise<TextbookModule[]> {
                 });
             } catch (e) {
                 console.warn(`Could not list files for store ${store.name}:`, e);
-                // Still add the store name so the folder appears, even if books fail to list
                 modules.push({
                     name: store.displayName || 'Untitled Module',
                     storeName: store.name!,
@@ -122,7 +118,7 @@ export async function listAllModules(): Promise<TextbookModule[]> {
 export async function createRagStore(displayName: string): Promise<string> {
     try {
         const ai = new GoogleGenAI({ apiKey: process.env.API_KEY }) as any;
-        if (!ai.fileSearchStores) throw new Error("RAG stores are not supported by this API key or environment.");
+        if (!ai.fileSearchStores) throw new Error("RAG stores are not supported by this API key.");
         const ragStore = await ai.fileSearchStores.create({ config: { displayName } });
         return ragStore.name || "";
     } catch (err: any) {
@@ -149,7 +145,7 @@ export async function uploadToRagStore(ragStoreName: string, file: File): Promis
     if (!op || !op.name) throw new Error("UPLOAD_FAILED: Cloud did not return an operation ID.");
     
     let retries = 0;
-    const maxRetries = 180; // 15 minutes max wait (180 * 5s)
+    const maxRetries = 180; // 15 minutes max
     
     while (retries < maxRetries) {
         await delay(5000); 
@@ -161,21 +157,17 @@ export async function uploadToRagStore(ragStoreName: string, file: File): Promis
                     if (op.error) {
                         throw new Error(`Cloud indexing error: ${op.error.message}`);
                     }
-                    return; // Indexing successfully complete
+                    return; 
                 }
             }
             retries++;
         } catch (pollErr: any) {
             console.warn("Polling operation status failed, retrying...", pollErr);
             retries++;
-            // Don't kill the loop on a single polling error, cloud might be busy
-            if (retries > 50 && pollErr.message.includes("404")) {
-                 throw new Error("OPERATION_LOST: Cloud operation was lost. Check your library in a moment.");
-            }
         }
     }
     
-    throw new Error("INDEXING_TIMEOUT: The file is uploaded but the cloud is taking a long time to index. Check back in a few minutes.");
+    throw new Error("INDEXING_TIMEOUT: The file is uploaded but indexing is taking too long. It will appear shortly.");
 }
 
 const BASE_GROUNDING_INSTRUCTION = `You are JBDPRESS_GPT, a strict RAG-based Textbook Tutor. 
@@ -192,6 +184,7 @@ export async function fileSearch(
     useFastMode: boolean = false,
     bookFocus?: string
 ): Promise<QueryResult> {
+    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
     const model = 'gemini-3-pro-preview';
     let instruction = BASE_GROUNDING_INSTRUCTION;
     if (bookFocus) { instruction += `\n\nFOCUS: Only search in: "${bookFocus}".`; }
@@ -205,7 +198,6 @@ export async function fileSearch(
     }
 
     try {
-        const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
         const response: GenerateContentResponse = await ai.models.generateContent({
             model: model,
             contents: query,
