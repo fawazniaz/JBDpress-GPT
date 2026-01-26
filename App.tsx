@@ -85,12 +85,15 @@ const App: React.FC = () => {
                 if (status === AppStatus.Error) setStatus(AppStatus.Welcome);
             }
         } catch (err: any) {
-            console.error("Cloud Sync Failed:", err);
-            if (err.message.includes("RESELECTION_REQUIRED")) {
+            console.error("Library Sync Error:", err);
+            const msg = err.message || "Unknown error";
+            if (msg.includes("QUOTA_EXCEEDED")) {
+                setApiKeyError("Cloud is Throttled. Retrying shortly...");
+            } else if (msg.includes("RESELECTION_REQUIRED")) {
                 setIsApiKeySelected(false);
-                setApiKeyError("Key Expired. Please authorize again.");
+                setApiKeyError("Session Expired. Please Re-Authorize.");
             } else {
-                setApiKeyError(`Sync status: ${err.message || 'Connecting...'}`);
+                setApiKeyError(`Sync: ${msg}`);
             }
         } finally {
             setIsLibraryLoading(false);
@@ -126,19 +129,14 @@ const App: React.FC = () => {
         const errMsg = err.message || "An unexpected error occurred.";
         
         if (errMsg.includes("QUOTA_EXCEEDED") || errMsg.includes("429")) {
-            setError("AI Quota Reached");
-            setTechnicalDetails("Your API key has run out of 'Free Tier' requests for today, or this project is restricted. Please wait a few minutes, or switch to a 'Paid' API key in the settings.");
+            setError("Throttled by Google Cloud");
+            setTechnicalDetails("Your project is hitting a quota limit. Don't worry, your files are safe! The cloud is just busy. Please wait 1-2 minutes and click 'Deep Scan' to recover your library.");
         } else if (errMsg.includes("NETWORK_ERROR")) {
             setError("Network Interrupted");
-            setTechnicalDetails("The connection was lost. Large files (30MB+) are sensitive to network drops. Try splitting the book or using a more stable connection.");
+            setTechnicalDetails("The connection was lost during the request. This often happens with very large books.");
         } else if (errMsg.includes("INDEXING_TIMEOUT")) {
             setError("Indexing in Progress");
-            setTechnicalDetails("The upload finished, but the cloud is taking a bit longer to read the content. It will appear in your library automatically in about 5 minutes.");
-        } else if (errMsg.includes("RESELECTION_REQUIRED")) {
-            setIsApiKeySelected(false);
-            setApiKeyError("API selection reset required.");
-            setStatus(AppStatus.Welcome);
-            return;
+            setTechnicalDetails("The upload finished! The cloud is now reading your textbook. It will appear in your library automatically in about 5 minutes.");
         } else {
             setError(customTitle || "Operation Error");
             setTechnicalDetails(errMsg);
@@ -149,7 +147,7 @@ const App: React.FC = () => {
 
     const handleUploadTextbooks = async () => {
         if (!isApiKeySelected) {
-            setApiKeyError("API Key required for upload.");
+            setApiKeyError("API Key required.");
             return;
         }
         if (files.length === 0) return;
@@ -157,24 +155,16 @@ const App: React.FC = () => {
         setStatus(AppStatus.Uploading);
         
         try {
-            const moduleLabel = prompt("Library Folder Name:") || `Module ${globalTextbooks.length + 1}`;
-            setUploadProgress({ current: 0, total: files.length, message: "Syncing with Cloud Repository...", fileName: "Handshake..." });
+            const moduleLabel = prompt("Enter Name for this Course Folder:") || `Course ${globalTextbooks.length + 1}`;
+            setUploadProgress({ current: 0, total: files.length, message: "Initializing Cloud Store...", fileName: "Connecting..." });
             
             const ragStoreName = await geminiService.createRagStore(moduleLabel);
             
             for (let i = 0; i < files.length; i++) {
-                const mb = (files[i].size / (1024 * 1024)).toFixed(1);
                 setUploadProgress({ 
                     current: i + 1, 
                     total: files.length, 
-                    message: `Step 1/2: Sending Data (${mb} MB)...`, 
-                    fileName: files[i].name 
-                });
-                
-                setUploadProgress({ 
-                    current: i + 1, 
-                    total: files.length, 
-                    message: `Step 2/2: Cloud Processing (Reading Content)...`, 
+                    message: `Sending File (${(files[i].size / 1048576).toFixed(1)}MB)...`, 
                     fileName: files[i].name 
                 });
                 
@@ -215,7 +205,7 @@ const App: React.FC = () => {
                         onOpenDashboard={() => setStatus(AppStatus.AdminDashboard)}
                         textbooks={globalTextbooks}
                         isLibraryLoading={isLibraryLoading}
-                        onRefreshLibrary={() => { setGlobalTextbooks([]); fetchLibrary(true); }}
+                        onRefreshLibrary={() => fetchLibrary(true)}
                         apiKeyError={apiKeyError}
                         files={files}
                         setFiles={setFiles}
@@ -234,7 +224,7 @@ const App: React.FC = () => {
             case AppStatus.AdminDashboard:
                 return <AdminDashboard onClose={() => setStatus(AppStatus.Welcome)} />;
             case AppStatus.Uploading:
-                return <ProgressBar progress={uploadProgress?.current || 0} total={uploadProgress?.total || 1} message={uploadProgress?.message || "Processing..."} fileName={uploadProgress?.fileName} />;
+                return <ProgressBar progress={uploadProgress?.current || 0} total={uploadProgress?.total || 1} message={uploadProgress?.message || "Uploading..."} fileName={uploadProgress?.fileName} />;
             case AppStatus.Chatting:
                 return <ChatInterface 
                     user={user!}
@@ -250,7 +240,7 @@ const App: React.FC = () => {
                             const res = await geminiService.fileSearch(activeRagStoreName!, msg, m, f, b);
                             setChatHistory(prev => [...prev, { role: 'model', parts: [{ text: res.text }] }]);
                         } catch (e: any) { 
-                            handleError(e, "Query Failed");
+                            handleError(e, "Query Throttled");
                         } finally { 
                             setIsQueryLoading(false); 
                         }
@@ -263,18 +253,26 @@ const App: React.FC = () => {
                  return (
                     <div className="flex flex-col h-screen items-center justify-center p-8 text-center bg-gem-onyx-light dark:bg-gem-onyx-dark transition-colors">
                         <div className="text-7xl mb-6">
-                            {error === "Indexing in Progress" ? '⏳' : (error === "AI Quota Reached" ? '🛑' : '⚠️')}
+                            {error === "Indexing in Progress" ? '⏳' : (error?.includes("Throttled") ? '☁️' : '⚠️')}
                         </div>
                         <h1 className={`text-3xl font-black mb-4 ${error === "Indexing in Progress" ? 'text-gem-blue' : 'text-red-500'}`}>{error}</h1>
                         <div className="max-w-xl p-8 bg-white dark:bg-gem-slate-dark rounded-[30px] shadow-2xl mb-8">
                             <p className="font-bold text-gem-blue mb-4">Status Update:</p>
                             <p className="text-sm opacity-70 mb-6 leading-relaxed whitespace-pre-wrap">{technicalDetails}</p>
-                            <button 
-                                onClick={() => { setStatus(AppStatus.Welcome); setError(null); fetchLibrary(true); }} 
-                                className="bg-gem-blue text-white px-10 py-3 rounded-xl font-black shadow-lg hover:scale-105 active:scale-95 transition-all"
-                            >
-                                {error === "Indexing in Progress" ? 'Back to Library' : 'Return to Home'}
-                            </button>
+                            <div className="flex flex-col sm:flex-row gap-4 justify-center">
+                                <button 
+                                    onClick={() => { setStatus(AppStatus.Welcome); setError(null); fetchLibrary(true); }} 
+                                    className="bg-gem-blue text-white px-10 py-3 rounded-xl font-black shadow-lg hover:scale-105 active:scale-95 transition-all"
+                                >
+                                    Deep Scan for Books
+                                </button>
+                                <button 
+                                    onClick={() => { setStatus(AppStatus.Welcome); setError(null); }} 
+                                    className="bg-gem-mist-light dark:bg-gem-mist-dark text-gem-onyx-dark dark:text-white px-10 py-3 rounded-xl font-bold hover:scale-105 active:scale-95 transition-all"
+                                >
+                                    Dismiss
+                                </button>
+                            </div>
                         </div>
                     </div>
                  );

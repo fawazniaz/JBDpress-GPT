@@ -29,65 +29,65 @@ function handleApiError(err: any, context: string): Error {
     console.error(`Gemini API Error [${context}]:`, err);
     let message = err.message || "Unknown AI error";
 
-    // Detect Quota/Rate Limit Errors (The error you saw)
     if (message.includes("429") || message.includes("RESOURCE_EXHAUSTED") || message.includes("quota")) {
-        return new Error("QUOTA_EXCEEDED: Your API key has reached its limit or doesn't have access to this specific model. Try switching to a Paid Key or wait a few minutes.");
+        return new Error("QUOTA_EXCEEDED: The cloud is currently throttling your requests. Your files are safe, but the connection is busy. Please wait 60 seconds.");
     }
 
     if (message.includes("Requested entity was not found.")) {
-        return new Error("RESELECTION_REQUIRED: The selected API key was not found or is invalid for this project.");
+        return new Error("RESELECTION_REQUIRED: Session expired. Please re-select your API key.");
     }
 
     if (err.status === 403 || message.includes("API key not valid") || message.includes("PermissionDenied")) {
-        return new Error("INVALID_KEY: Your API key was rejected. Ensure you have a paid-tier key and billing enabled.");
-    }
-
-    if (err instanceof TypeError && (message.includes("fetch") || message.includes("NetworkError"))) {
-        return new Error("NETWORK_ERROR: The connection was interrupted. Check your internet connection.");
+        return new Error("INVALID_KEY: Your API key was rejected. Check billing or key status.");
     }
     
     return new Error(`${context} failed: ${message}`);
 }
 
 /**
- * Fetches all existing RAG stores from the cloud AND merges with local registry for instant availability.
+ * Robustly fetches all RAG stores. Handles variations in SDK response structures.
  */
 export async function listAllModules(): Promise<TextbookModule[]> {
     try {
+        // Initialize AI client using named parameter as per guidelines
         const ai = new GoogleGenAI({ apiKey: process.env.API_KEY }) as any;
         
         if (!ai.fileSearchStores) {
-            console.error("SDK Error: fileSearchStores property missing. Check environment/SDK version.");
+            console.error("Critical: SDK fileSearchStores missing.");
             return [];
         }
 
-        // Get cloud stores
         let cloudStores: any[] = [];
         try {
-            const storesResponse = (await withTimeout(
+            // Increase timeout to 25s for better discovery
+            // Fixed: Explicitly typed response as any to prevent "unknown" property access errors on property accessors.
+            const response: any = await withTimeout(
                 ai.fileSearchStores.list(),
-                15000,
-                "Cloud sync timed out."
-            )) as any;
+                25000,
+                "Cloud list timed out."
+            );
 
-            if (Array.isArray(storesResponse)) {
-                cloudStores = storesResponse;
-            } else if (storesResponse?.fileSearchStores) {
-                cloudStores = storesResponse.fileSearchStores;
-            } else if (storesResponse?.stores) {
-                cloudStores = storesResponse.stores;
+            // Resilient parsing: SDK returns lists in different wrappers depending on version/environment
+            if (Array.isArray(response)) {
+                cloudStores = response;
+            } else if (response?.fileSearchStores) {
+                cloudStores = response.fileSearchStores;
+            } else if (response?.stores) {
+                cloudStores = response.stores;
+            } else if (typeof response === 'object' && response !== null) {
+                // Fallback: look for any array property
+                const possibleList = Object.values(response).find(val => Array.isArray(val));
+                if (possibleList) cloudStores = possibleList as any[];
             }
-        } catch (e) {
-            console.warn("Cloud list failed, falling back to local registry only.");
+        } catch (e: any) {
+            console.warn("Cloud list request failed (likely quota). Using local registry cache.");
+            // If we hit a 429 here, we don't crash, we just proceed to use local registry
         }
 
-        // Get local registry
         const localRegistry = JSON.parse(localStorage.getItem(LOCAL_REGISTRY_KEY) || '[]');
-        
-        // Merge - prioritizing cloud data if available, keeping local as placeholder
         const mergedMap = new Map<string, TextbookModule>();
         
-        // Add cloud stores
+        // 1. Fill from Cloud (Source of Truth)
         for (const store of cloudStores) {
             if (!store.name) continue;
             mergedMap.set(store.name, {
@@ -97,13 +97,13 @@ export async function listAllModules(): Promise<TextbookModule[]> {
             });
         }
 
-        // Add local registry items if not already present
+        // 2. Fill from Local Registry (Fixes the "gone" feeling for newly created items)
         for (const local of localRegistry) {
             if (!mergedMap.has(local.storeName)) {
                 mergedMap.set(local.storeName, {
                     name: local.name,
                     storeName: local.storeName,
-                    books: local.books || ['Indexing...']
+                    books: local.books || ['Connecting...']
                 });
             }
         }
@@ -111,12 +111,16 @@ export async function listAllModules(): Promise<TextbookModule[]> {
         const rawResults = Array.from(mergedMap.values());
         if (rawResults.length === 0) return [];
 
-        // Enrich with file lists
+        // Save current state back to registry to "heal" it
+        localStorage.setItem(LOCAL_REGISTRY_KEY, JSON.stringify(rawResults));
+
+        // 3. Lazy-load file lists (don't let this crash the main list if one fails)
         const enrichedPromises = rawResults.map(async (mod) => {
             try {
-                const filesResponse = (await ai.fileSearchStores.listFilesSearchStoreFiles({
+                // Fixed: Cast response to any for reliable property access
+                const filesResponse: any = await ai.fileSearchStores.listFilesSearchStoreFiles({
                     fileSearchStoreName: mod.storeName
-                })) as any;
+                });
                 
                 let files: any[] = [];
                 if (Array.isArray(filesResponse)) files = filesResponse;
@@ -138,17 +142,14 @@ export async function listAllModules(): Promise<TextbookModule[]> {
     }
 }
 
-/**
- * Creates a new RAG store and registers it locally.
- */
 export async function createRagStore(displayName: string): Promise<string> {
     try {
         const ai = new GoogleGenAI({ apiKey: process.env.API_KEY }) as any;
-        const ragStore = await ai.fileSearchStores.create({ config: { displayName } });
+        const ragStore: any = await ai.fileSearchStores.create({ config: { displayName } });
         const storeName = ragStore.name || "";
         
         const registry = JSON.parse(localStorage.getItem(LOCAL_REGISTRY_KEY) || '[]');
-        registry.push({ name: displayName, storeName: storeName, books: ['Connecting to cloud...'] });
+        registry.push({ name: displayName, storeName: storeName, books: ['New Module Created...'] });
         localStorage.setItem(LOCAL_REGISTRY_KEY, JSON.stringify(registry));
         
         return storeName;
@@ -157,9 +158,6 @@ export async function createRagStore(displayName: string): Promise<string> {
     }
 }
 
-/**
- * Uploads a file to a RAG store and polls until indexing is complete.
- */
 export async function uploadToRagStore(ragStoreName: string, file: File): Promise<void> {
     const ai = new GoogleGenAI({ apiKey: process.env.API_KEY }) as any;
     let op: any;
@@ -170,23 +168,23 @@ export async function uploadToRagStore(ragStoreName: string, file: File): Promis
             file: file
         });
     } catch (err: any) {
-        throw handleApiError(err, "Initial upload");
+        throw handleApiError(err, "Upload request");
     }
 
-    if (!op || !op.name) throw new Error("UPLOAD_FAILED: Cloud did not return an operation ID.");
+    if (!op || !op.name) throw new Error("Cloud upload rejected (Missing Op ID).");
     
     let retries = 0;
-    const maxRetries = 40; 
+    const maxRetries = 30; 
     
     while (retries < maxRetries) {
-        await delay(5000); 
+        await delay(6000); 
         try {
             const pollAi = new GoogleGenAI({ apiKey: process.env.API_KEY }) as any;
-            const currentOp = await pollAi.operations.get({ name: op.name });
+            const currentOp: any = await pollAi.operations.get({ name: op.name });
             if (currentOp) {
                 op = currentOp;
                 if (op.done) {
-                    if (op.error) throw new Error(`Indexing Error: ${op.error.message}`);
+                    if (op.error) throw new Error(`Indexing error: ${op.error.message}`);
                     
                     const registry = JSON.parse(localStorage.getItem(LOCAL_REGISTRY_KEY) || '[]');
                     const idx = registry.findIndex((r: any) => r.storeName === ragStoreName);
@@ -205,16 +203,13 @@ export async function uploadToRagStore(ragStoreName: string, file: File): Promis
         }
     }
     
-    throw new Error("INDEXING_TIMEOUT: The file is uploaded. It will appear in your library automatically within 5 minutes as the cloud finishes indexing.");
+    throw new Error("INDEXING_TIMEOUT: Your book is uploaded. The cloud is busy indexing it; it will show up in your library automatically soon.");
 }
 
 const BASE_GROUNDING_INSTRUCTION = `You are JBDPRESS_GPT, a strict RAG-based Textbook Tutor. 
 CRITICAL RULE: Answer ONLY using the uploaded textbooks. Do not use outside knowledge.
 If information is missing, say: "I apologize, but this is not in the textbooks."`;
 
-/**
- * Performs a search against a RAG store.
- */
 export async function fileSearch(
     ragStoreName: string, 
     query: string, 
@@ -223,9 +218,8 @@ export async function fileSearch(
     bookFocus?: string
 ): Promise<QueryResult> {
     const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-    
-    // CHANGED: Use gemini-3-flash-preview instead of pro to bypass 429 quota limits on free keys
-    const model = 'gemini-3-flash-preview'; 
+    // Use gemini-3-pro-preview for complex reasoning tasks as per guidelines
+    const model = 'gemini-3-pro-preview'; 
     
     let instruction = BASE_GROUNDING_INSTRUCTION;
     if (bookFocus) { instruction += `\n\nFOCUS: Only search in: "${bookFocus}".`; }
@@ -244,12 +238,13 @@ export async function fileSearch(
             contents: query,
             config: {
                 systemInstruction: instruction,
+                // fileSearch tool is used for RAG; using 'as any' as it's an extended feature not in standard guidelines
                 tools: [{ fileSearch: { fileSearchStoreNames: [ragStoreName] } } as any]
             }
         });
 
         return {
-            text: response.text || "No relevant information found in the library.",
+            text: response.text || "I found the textbooks, but couldn't find a direct answer to that specific question.",
             groundingChunks: response.candidates?.[0]?.groundingMetadata?.groundingChunks || [],
         };
     } catch (err: any) {
@@ -257,9 +252,6 @@ export async function fileSearch(
     }
 }
 
-/**
- * Generates study questions based on textbooks.
- */
 export async function generateExampleQuestions(ragStoreName: string): Promise<string[]> {
     try {
         const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
@@ -281,9 +273,6 @@ export async function generateExampleQuestions(ragStoreName: string): Promise<st
     }
 }
 
-/**
- * Connects to Gemini Live.
- */
 export async function connectLive(callbacks: {
     onopen: () => void;
     onmessage: (message: LiveServerMessage) => void;
@@ -306,26 +295,43 @@ export async function connectLive(callbacks: {
     });
 }
 
+// Manual implementation of encode as per coding guidelines
 export function encodeBase64(bytes: Uint8Array): string {
     let binary = '';
-    for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
+    const len = bytes.byteLength;
+    for (let i = 0; i < len; i++) {
+        binary += String.fromCharCode(bytes[i]);
+    }
     return btoa(binary);
 }
 
+// Manual implementation of decode as per coding guidelines
 export function decodeBase64(base64: string): Uint8Array {
     const binaryString = atob(base64);
-    const bytes = new Uint8Array(binaryString.length);
-    for (let i = 0; i < binaryString.length; i++) bytes[i] = binaryString.charCodeAt(i);
+    const len = binaryString.length;
+    const bytes = new Uint8Array(len);
+    for (let i = 0; i < len; i++) {
+        bytes[i] = binaryString.charCodeAt(i);
+    }
     return bytes;
 }
 
-export async function decodeAudioData(data: Uint8Array, ctx: AudioContext, sampleRate: number, numChannels: number): Promise<AudioBuffer> {
+// Manual implementation of audio decoding as per coding guidelines
+export async function decodeAudioData(
+    data: Uint8Array,
+    ctx: AudioContext,
+    sampleRate: number,
+    numChannels: number,
+): Promise<AudioBuffer> {
     const dataInt16 = new Int16Array(data.buffer);
     const frameCount = dataInt16.length / numChannels;
     const buffer = ctx.createBuffer(numChannels, frameCount, sampleRate);
+
     for (let channel = 0; channel < numChannels; channel++) {
         const channelData = buffer.getChannelData(channel);
-        for (let i = 0; i < frameCount; i++) channelData[i] = dataInt16[i * numChannels + channel] / 32768.0;
+        for (let i = 0; i < frameCount; i++) {
+            channelData[i] = dataInt16[i * numChannels + channel] / 32768.0;
+        }
     }
     return buffer;
 }
