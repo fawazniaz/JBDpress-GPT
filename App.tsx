@@ -3,7 +3,7 @@
  * @license
  * SPDX-License-Identifier: Apache-2.0
 */
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { AppStatus, ChatMessage, User, TextbookModule } from './types';
 import * as geminiService from './services/geminiService';
 import Spinner from './components/Spinner';
@@ -41,6 +41,8 @@ const App: React.FC = () => {
     const [files, setFiles] = useState<File[]>([]);
     const [globalTextbooks, setGlobalTextbooks] = useState<TextbookModule[]>([]);
 
+    const loadingRef = useRef(false);
+
     useEffect(() => {
         const savedTheme = localStorage.getItem('theme');
         if (savedTheme === 'dark') {
@@ -66,7 +68,9 @@ const App: React.FC = () => {
     }, []);
 
     const fetchLibrary = useCallback(async (force: boolean = false) => {
-        if (isLibraryLoading && !force) return;
+        if (loadingRef.current && !force) return;
+        
+        loadingRef.current = true;
         setIsLibraryLoading(true);
         setApiKeyError(null);
         
@@ -80,14 +84,14 @@ const App: React.FC = () => {
             });
             const uniqueList = Array.from(uniqueModulesMap.values());
             setGlobalTextbooks(uniqueList);
-            if (uniqueList.length > 0) setIsLibraryLoading(false);
         } catch (err: any) {
             console.error("Library Sync Failure:", err);
             setApiKeyError(`Sync status: Local library active.`);
         } finally {
-            setTimeout(() => setIsLibraryLoading(false), 1500);
+            setIsLibraryLoading(false);
+            loadingRef.current = false;
         }
-    }, [isLibraryLoading]);
+    }, []); // Empty deps to prevent identity-based loops
 
     useEffect(() => {
         if (status === AppStatus.Welcome && isApiKeySelected) {

@@ -1,3 +1,4 @@
+
 /**
  * @license
  * SPDX-License-Identifier: Apache-2.0
@@ -69,13 +70,13 @@ export async function listAllModules(): Promise<TextbookModule[]> {
         // Fetch cloud list with a reasonable timeout
         const cloudResponse: any = await Promise.race([
             ai.fileSearchStores.list(),
-            new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout")), 10000))
+            new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout")), 8000))
         ]).catch(() => ({ fileSearchStores: [] }));
 
         const cloudStores = cloudResponse.fileSearchStores || cloudResponse.stores || (Array.isArray(cloudResponse) ? cloudResponse : []);
 
-        // Update local registry with cloud data (Additive only)
-        for (const s of cloudStores) {
+        // Fetch all store details in parallel for efficiency
+        const storeDetailPromises = cloudStores.map(async (s: any) => {
             try {
                 const filesRes: any = await ai.fileSearchStores.listFilesSearchStoreFiles({ 
                     fileSearchStoreName: s.name 
@@ -84,21 +85,27 @@ export async function listAllModules(): Promise<TextbookModule[]> {
                 const files = filesRes.fileSearchStoreFiles || filesRes.files || [];
                 const bookNames = files.map((f: any) => f.displayName || 'Unnamed File');
 
-                registryMap.set(s.name, {
+                return {
                     name: s.displayName || 'Untitled Module',
                     storeName: s.name,
                     books: Array.from(new Set(bookNames))
-                });
+                };
             } catch (e) {
-                if (!registryMap.has(s.name)) {
-                    registryMap.set(s.name, {
-                        name: s.displayName || 'Untitled Module',
-                        storeName: s.name,
-                        books: ['Syncing content...']
-                    });
-                }
+                // Return cached version if cloud fetch fails for a specific store
+                return registryMap.get(s.name) || {
+                    name: s.displayName || 'Untitled Module',
+                    storeName: s.name,
+                    books: ['Syncing content...']
+                };
             }
-        }
+        });
+
+        const cloudResults = await Promise.all(storeDetailPromises);
+        cloudResults.forEach(res => {
+            if (res && res.storeName) {
+                registryMap.set(res.storeName, res);
+            }
+        });
 
         const finalResults = Array.from(registryMap.values());
         localStorage.setItem(STABLE_REGISTRY_KEY, JSON.stringify(finalResults));
