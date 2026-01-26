@@ -92,6 +92,8 @@ const App: React.FC = () => {
             } else if (msg.includes("RESELECTION_REQUIRED")) {
                 setIsApiKeySelected(false);
                 setApiKeyError("Session Expired. Please Re-Authorize.");
+            } else if (msg.includes("OVERLOADED")) {
+                setApiKeyError("Cloud Overloaded. Retrying...");
             } else {
                 setApiKeyError(`Sync: ${msg}`);
             }
@@ -128,17 +130,20 @@ const App: React.FC = () => {
         console.error("Application Error:", err);
         const errMsg = err.message || "An unexpected error occurred.";
         
-        if (errMsg.includes("QUOTA_EXCEEDED") || errMsg.includes("429")) {
+        if (errMsg.includes("SERVER_OVERLOADED")) {
+            setError("Cloud Overloaded");
+            setTechnicalDetails("The AI service is temporarily busy due to high global traffic. We've tried retrying automatically, but the server is still unavailable. Please wait 10 seconds and simply 'Try Again'.");
+        } else if (errMsg.includes("QUOTA_EXCEEDED") || errMsg.includes("429")) {
             setError("Model Limit Reached");
-            setTechnicalDetails("Your project is hitting a quota limit for the 'Pro' model. We have automatically switched you to the 'Flash' model for better compatibility. Your books are safe! Please wait 1 minute for the cloud to reset and try again.");
+            setTechnicalDetails("Your project is hitting a quota limit. We are using the high-availability 'Flash' model, but the account needs a moment to reset. Please wait 1 minute.");
         } else if (errMsg.includes("NETWORK_ERROR")) {
             setError("Network Interrupted");
-            setTechnicalDetails("The connection was lost during the request. This often happens with very large books.");
+            setTechnicalDetails("The connection was lost. This can happen with large textbooks.");
         } else if (errMsg.includes("INDEXING_TIMEOUT")) {
             setError("Indexing in Progress");
-            setTechnicalDetails("The upload finished! The cloud is now reading your textbook. It will appear in your library automatically in about 5 minutes.");
+            setTechnicalDetails("Upload complete! The cloud is now reading your textbook. It will appear automatically in about 5 minutes.");
         } else {
-            setError(customTitle || "Operation Error");
+            setError(customTitle || "Query Failed");
             setTechnicalDetails(errMsg);
         }
 
@@ -250,10 +255,11 @@ const App: React.FC = () => {
                     exampleQuestions={exampleQuestions}
                 />;
             case AppStatus.Error:
+                 const isTransient = error?.includes("Overloaded") || error?.includes("Query");
                  return (
                     <div className="flex flex-col h-screen items-center justify-center p-8 text-center bg-gem-onyx-light dark:bg-gem-onyx-dark transition-colors">
                         <div className="text-7xl mb-6">
-                            {error === "Indexing in Progress" ? '⏳' : (error?.includes("Limit") ? '⚡' : '⚠️')}
+                            {error === "Indexing in Progress" ? '⏳' : (isTransient ? '☁️' : '⚠️')}
                         </div>
                         <h1 className={`text-3xl font-black mb-4 ${error === "Indexing in Progress" ? 'text-gem-blue' : 'text-red-500'}`}>{error}</h1>
                         <div className="max-w-xl p-8 bg-white dark:bg-gem-slate-dark rounded-[30px] shadow-2xl mb-8">
@@ -261,10 +267,19 @@ const App: React.FC = () => {
                             <p className="text-sm opacity-70 mb-6 leading-relaxed whitespace-pre-wrap">{technicalDetails}</p>
                             <div className="flex flex-col sm:flex-row gap-4 justify-center">
                                 <button 
-                                    onClick={() => { setStatus(AppStatus.Welcome); setError(null); fetchLibrary(true); }} 
+                                    onClick={() => {
+                                        if (isTransient && activeRagStoreName) {
+                                            setStatus(AppStatus.Chatting);
+                                            setError(null);
+                                        } else {
+                                            setStatus(AppStatus.Welcome);
+                                            setError(null);
+                                            fetchLibrary(true);
+                                        }
+                                    }} 
                                     className="bg-gem-blue text-white px-10 py-3 rounded-xl font-black shadow-lg hover:scale-105 active:scale-95 transition-all"
                                 >
-                                    Deep Scan & Reset
+                                    {isTransient ? 'Try Query Again' : 'Deep Scan & Reset'}
                                 </button>
                                 <button 
                                     onClick={() => { setStatus(AppStatus.Welcome); setError(null); }} 

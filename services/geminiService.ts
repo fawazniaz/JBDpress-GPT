@@ -25,13 +25,45 @@ async function withTimeout<T>(promise: Promise<T>, ms: number, errorMessage: str
     return Promise.race([promise, timeoutPromise]).finally(() => clearTimeout(timeoutId));
 }
 
+/**
+ * Robust retry wrapper for transient API errors (503, 500)
+ */
+async function withRetry<T>(fn: () => Promise<T>, maxRetries = 3): Promise<T> {
+    let lastError: any;
+    for (let i = 0; i < maxRetries; i++) {
+        try {
+            return await fn();
+        } catch (err: any) {
+            lastError = err;
+            const isTransient = err.message?.includes("503") || 
+                               err.message?.includes("500") || 
+                               err.message?.includes("overloaded") ||
+                               err.message?.includes("UNAVAILABLE");
+            
+            if (isTransient && i < maxRetries - 1) {
+                const backoff = Math.pow(2, i) * 2000; // 2s, 4s, 8s...
+                console.warn(`Model overloaded. Retry ${i+1}/${maxRetries} in ${backoff}ms...`);
+                await delay(backoff);
+                continue;
+            }
+            throw err;
+        }
+    }
+    throw lastError;
+}
+
 function handleApiError(err: any, context: string): Error {
     console.error(`Gemini API Error [${context}]:`, err);
     let message = err.message || "Unknown AI error";
 
-    // Handle the specific "Resource Exhausted" error seen in the user's screenshot
+    // Handle 503 specifically
+    if (message.includes("503") || message.includes("overloaded") || message.includes("UNAVAILABLE")) {
+        return new Error("SERVER_OVERLOADED: The AI is currently handling too many requests globally. We've tried retrying, but the cloud is still busy. Please wait 10-20 seconds and try your question again.");
+    }
+
+    // Handle Quota
     if (message.includes("429") || message.includes("RESOURCE_EXHAUSTED") || message.includes("quota")) {
-        return new Error("QUOTA_EXCEEDED: Your current API key has a zero-quota limit for the Pro model. We are switching you to the Flash model, which should work. Please wait 30 seconds for the system to reset.");
+        return new Error("QUOTA_EXCEEDED: Your API key limit has been reached. Please wait 1 minute for the window to reset.");
     }
 
     if (message.includes("Requested entity was not found.")) {
@@ -49,87 +81,89 @@ function handleApiError(err: any, context: string): Error {
  * Robustly fetches all RAG stores.
  */
 export async function listAllModules(): Promise<TextbookModule[]> {
-    try {
-        const ai = new GoogleGenAI({ apiKey: process.env.API_KEY }) as any;
-        
-        if (!ai.fileSearchStores) {
-            console.error("Critical: SDK fileSearchStores missing.");
-            return [];
-        }
-
-        let cloudStores: any[] = [];
+    return withRetry(async () => {
         try {
-            const response: any = await withTimeout(
-                ai.fileSearchStores.list(),
-                25000,
-                "Cloud list timed out."
-            );
-
-            if (Array.isArray(response)) {
-                cloudStores = response;
-            } else if (response?.fileSearchStores) {
-                cloudStores = response.fileSearchStores;
-            } else if (response?.stores) {
-                cloudStores = response.stores;
-            } else if (typeof response === 'object' && response !== null) {
-                const possibleList = Object.values(response).find(val => Array.isArray(val));
-                if (possibleList) cloudStores = possibleList as any[];
+            const ai = new GoogleGenAI({ apiKey: process.env.API_KEY }) as any;
+            
+            if (!ai.fileSearchStores) {
+                console.error("Critical: SDK fileSearchStores missing.");
+                return [];
             }
-        } catch (e: any) {
-            console.warn("Cloud list request failed (likely quota). Using local registry cache.");
-        }
 
-        const localRegistry = JSON.parse(localStorage.getItem(LOCAL_REGISTRY_KEY) || '[]');
-        const mergedMap = new Map<string, TextbookModule>();
-        
-        for (const store of cloudStores) {
-            if (!store.name) continue;
-            mergedMap.set(store.name, {
-                name: store.displayName || 'Untitled Module',
-                storeName: store.name,
-                books: []
-            });
-        }
-
-        for (const local of localRegistry) {
-            if (!mergedMap.has(local.storeName)) {
-                mergedMap.set(local.storeName, {
-                    name: local.name,
-                    storeName: local.storeName,
-                    books: local.books || ['Connecting...']
-                });
-            }
-        }
-
-        const rawResults = Array.from(mergedMap.values());
-        if (rawResults.length === 0) return [];
-
-        localStorage.setItem(LOCAL_REGISTRY_KEY, JSON.stringify(rawResults));
-
-        const enrichedPromises = rawResults.map(async (mod) => {
+            let cloudStores: any[] = [];
             try {
-                const filesResponse: any = await ai.fileSearchStores.listFilesSearchStoreFiles({
-                    fileSearchStoreName: mod.storeName
-                });
-                
-                let files: any[] = [];
-                if (Array.isArray(filesResponse)) files = filesResponse;
-                else if (filesResponse?.fileSearchStoreFiles) files = filesResponse.fileSearchStoreFiles;
-                else if (filesResponse?.files) files = filesResponse.files;
+                const response: any = await withTimeout(
+                    ai.fileSearchStores.list(),
+                    25000,
+                    "Cloud list timed out."
+                );
 
-                return {
-                    ...mod,
-                    books: files.length > 0 ? files.map((f: any) => f.displayName || 'Unnamed File') : mod.books
-                };
-            } catch (e) {
-                return mod; 
+                if (Array.isArray(response)) {
+                    cloudStores = response;
+                } else if (response?.fileSearchStores) {
+                    cloudStores = response.fileSearchStores;
+                } else if (response?.stores) {
+                    cloudStores = response.stores;
+                } else if (typeof response === 'object' && response !== null) {
+                    const possibleList = Object.values(response).find(val => Array.isArray(val));
+                    if (possibleList) cloudStores = possibleList as any[];
+                }
+            } catch (e: any) {
+                console.warn("Cloud list request failed (likely quota). Using local registry cache.");
             }
-        });
 
-        return await Promise.all(enrichedPromises);
-    } catch (err: any) {
-        throw handleApiError(err, "listAllModules");
-    }
+            const localRegistry = JSON.parse(localStorage.getItem(LOCAL_REGISTRY_KEY) || '[]');
+            const mergedMap = new Map<string, TextbookModule>();
+            
+            for (const store of cloudStores) {
+                if (!store.name) continue;
+                mergedMap.set(store.name, {
+                    name: store.displayName || 'Untitled Module',
+                    storeName: store.name,
+                    books: []
+                });
+            }
+
+            for (const local of localRegistry) {
+                if (!mergedMap.has(local.storeName)) {
+                    mergedMap.set(local.storeName, {
+                        name: local.name,
+                        storeName: local.storeName,
+                        books: local.books || ['Connecting...']
+                    });
+                }
+            }
+
+            const rawResults = Array.from(mergedMap.values());
+            if (rawResults.length === 0) return [];
+
+            localStorage.setItem(LOCAL_REGISTRY_KEY, JSON.stringify(rawResults));
+
+            const enrichedPromises = rawResults.map(async (mod) => {
+                try {
+                    const filesResponse: any = await ai.fileSearchStores.listFilesSearchStoreFiles({
+                        fileSearchStoreName: mod.storeName
+                    });
+                    
+                    let files: any[] = [];
+                    if (Array.isArray(filesResponse)) files = filesResponse;
+                    else if (filesResponse?.fileSearchStoreFiles) files = filesResponse.fileSearchStoreFiles;
+                    else if (filesResponse?.files) files = filesResponse.files;
+
+                    return {
+                        ...mod,
+                        books: files.length > 0 ? files.map((f: any) => f.displayName || 'Unnamed File') : mod.books
+                    };
+                } catch (e) {
+                    return mod; 
+                }
+            });
+
+            return await Promise.all(enrichedPromises);
+        } catch (err: any) {
+            throw handleApiError(err, "listAllModules");
+        }
+    });
 }
 
 export async function createRagStore(displayName: string): Promise<string> {
@@ -201,7 +235,7 @@ CRITICAL RULE: Answer ONLY using the uploaded textbooks. Do not use outside know
 If information is missing, say: "I apologize, but this is not in the textbooks."`;
 
 /**
- * Performs search using Flash model to ensure high availability and bypass Pro-only quota limits.
+ * Performs search using Flash model with automatic retries for transient server overloads.
  */
 export async function fileSearch(
     ragStoreName: string, 
@@ -210,61 +244,62 @@ export async function fileSearch(
     useFastMode: boolean = false,
     bookFocus?: string
 ): Promise<QueryResult> {
-    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-    
-    // CRITICAL: Switched from gemini-3-pro-preview to gemini-3-flash-preview. 
-    // Flash has much higher free-tier limits and is less likely to trigger a 429 Resource Exhausted error.
-    const model = 'gemini-3-flash-preview'; 
-    
-    let instruction = BASE_GROUNDING_INSTRUCTION;
-    if (bookFocus) { instruction += `\n\nFOCUS: Only search in: "${bookFocus}".`; }
-    
-    switch(method) {
-        case 'blooms': instruction += " Apply Bloom's Taxonomy."; break;
-        case 'montessori': instruction += " Use Montessori methods."; break;
-        case 'pomodoro': instruction += " 25-minute study focus."; break;
-        case 'kindergarten': instruction += " Simple analogies."; break;
-        case 'lesson-plan': instruction += " Generate a Teacher's Lesson Plan."; break;
-    }
+    return withRetry(async () => {
+        const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+        const model = 'gemini-3-flash-preview'; 
+        
+        let instruction = BASE_GROUNDING_INSTRUCTION;
+        if (bookFocus) { instruction += `\n\nFOCUS: Only search in: "${bookFocus}".`; }
+        
+        switch(method) {
+            case 'blooms': instruction += " Apply Bloom's Taxonomy."; break;
+            case 'montessori': instruction += " Use Montessori methods."; break;
+            case 'pomodoro': instruction += " 25-minute study focus."; break;
+            case 'kindergarten': instruction += " Simple analogies."; break;
+            case 'lesson-plan': instruction += " Generate a Teacher's Lesson Plan."; break;
+        }
 
-    try {
-        const response: GenerateContentResponse = await ai.models.generateContent({
-            model: model,
-            contents: query,
-            config: {
-                systemInstruction: instruction,
-                tools: [{ fileSearch: { fileSearchStoreNames: [ragStoreName] } } as any]
-            }
-        });
+        try {
+            const response: GenerateContentResponse = await ai.models.generateContent({
+                model: model,
+                contents: query,
+                config: {
+                    systemInstruction: instruction,
+                    tools: [{ fileSearch: { fileSearchStoreNames: [ragStoreName] } } as any]
+                }
+            });
 
-        return {
-            text: response.text || "I found the textbooks, but couldn't find a direct answer to that specific question.",
-            groundingChunks: response.candidates?.[0]?.groundingMetadata?.groundingChunks || [],
-        };
-    } catch (err: any) {
-        throw handleApiError(err, "fileSearch");
-    }
+            return {
+                text: response.text || "I found the textbooks, but couldn't find a direct answer to that specific question.",
+                groundingChunks: response.candidates?.[0]?.groundingMetadata?.groundingChunks || [],
+            };
+        } catch (err: any) {
+            throw handleApiError(err, "fileSearch");
+        }
+    });
 }
 
 export async function generateExampleQuestions(ragStoreName: string): Promise<string[]> {
-    try {
-        const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-        const response = await ai.models.generateContent({
-            model: 'gemini-3-flash-preview',
-            contents: 'List 3 study questions based on these textbooks.',
-            config: {
-                tools: [{ fileSearch: { fileSearchStoreNames: [ragStoreName] } } as any],
-                responseMimeType: 'application/json',
-                responseSchema: {
-                    type: Type.ARRAY,
-                    items: { type: Type.STRING }
+    return withRetry(async () => {
+        try {
+            const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+            const response = await ai.models.generateContent({
+                model: 'gemini-3-flash-preview',
+                contents: 'List 3 study questions based on these textbooks.',
+                config: {
+                    tools: [{ fileSearch: { fileSearchStoreNames: [ragStoreName] } } as any],
+                    responseMimeType: 'application/json',
+                    responseSchema: {
+                        type: Type.ARRAY,
+                        items: { type: Type.STRING }
+                    }
                 }
-            }
-        });
-        return JSON.parse(response.text || "[]");
-    } catch (err) {
-        return ["What are the key goals?", "Summarize the introduction.", "Explain the main theory."];
-    }
+            });
+            return JSON.parse(response.text || "[]");
+        } catch (err) {
+            return ["What are the key goals?", "Summarize the introduction.", "Explain the main theory."];
+        }
+    });
 }
 
 export async function connectLive(callbacks: {
