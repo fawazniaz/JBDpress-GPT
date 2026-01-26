@@ -58,26 +58,22 @@ function handleApiError(err: any, context: string): Error {
     let message = err.message || "Unknown AI error";
 
     if (message.includes("503") || message.includes("overloaded") || message.includes("UNAVAILABLE")) {
-        return new Error("SERVER_OVERLOADED: The AI service is under extreme heavy load globally. We attempted several retries, but the server is still rejecting connections. Please wait 20 seconds and click 'Force Auto-Retry'.");
+        return new Error("SERVER_OVERLOADED: The AI service is under extreme heavy load. Please wait 20 seconds and refresh.");
     }
 
     if (message.includes("429") || message.includes("RESOURCE_EXHAUSTED") || message.includes("quota")) {
-        return new Error("QUOTA_EXCEEDED: Your API key limit has been reached. Please wait 1 minute for the window to reset.");
+        return new Error("QUOTA_EXCEEDED: API limit reached. Please wait 1 minute.");
     }
 
     if (message.includes("Requested entity was not found.")) {
         return new Error("RESELECTION_REQUIRED: Session expired. Please re-select your API key.");
     }
 
-    if (err.status === 403 || message.includes("API key not valid") || message.includes("PermissionDenied")) {
-        return new Error("INVALID_KEY: Your API key was rejected. Check billing or key status.");
-    }
-    
     return new Error(`${context} failed: ${message}`);
 }
 
 /**
- * Robustly fetches all RAG stores.
+ * Robustly fetches all RAG stores and ensures NO duplicates.
  */
 export async function listAllModules(): Promise<TextbookModule[]> {
     return withRetry(async () => {
@@ -97,23 +93,17 @@ export async function listAllModules(): Promise<TextbookModule[]> {
                     "Cloud list timed out."
                 );
 
-                if (Array.isArray(response)) {
-                    cloudStores = response;
-                } else if (response?.fileSearchStores) {
-                    cloudStores = response.fileSearchStores;
-                } else if (response?.stores) {
-                    cloudStores = response.stores;
-                } else if (typeof response === 'object' && response !== null) {
-                    const possibleList = Object.values(response).find(val => Array.isArray(val));
-                    if (possibleList) cloudStores = possibleList as any[];
-                }
+                if (Array.isArray(response)) cloudStores = response;
+                else if (response?.fileSearchStores) cloudStores = response.fileSearchStores;
+                else if (response?.stores) cloudStores = response.stores;
             } catch (e: any) {
-                console.warn("Cloud list request failed (likely quota). Using local registry cache.");
+                console.warn("Cloud list request failed. Falling back to local cache.");
             }
 
-            const localRegistry = JSON.parse(localStorage.getItem(LOCAL_REGISTRY_KEY) || '[]');
+            const localRegistry: TextbookModule[] = JSON.parse(localStorage.getItem(LOCAL_REGISTRY_KEY) || '[]');
             const mergedMap = new Map<string, TextbookModule>();
             
+            // 1. Process Cloud Stores First (Source of Truth)
             for (const store of cloudStores) {
                 if (!store.name) continue;
                 mergedMap.set(store.name, {
@@ -123,21 +113,20 @@ export async function listAllModules(): Promise<TextbookModule[]> {
                 });
             }
 
+            // 2. Merge Local Cache (Only if missing from cloud)
             for (const local of localRegistry) {
                 if (!mergedMap.has(local.storeName)) {
                     mergedMap.set(local.storeName, {
                         name: local.name,
                         storeName: local.storeName,
-                        books: local.books || ['Connecting...']
+                        books: Array.from(new Set(local.books || [])) // Internal book deduplication
                     });
                 }
             }
 
             const rawResults = Array.from(mergedMap.values());
-            if (rawResults.length === 0) return [];
-
-            localStorage.setItem(LOCAL_REGISTRY_KEY, JSON.stringify(rawResults));
-
+            
+            // 3. Deep Sync Books per Store
             const enrichedPromises = rawResults.map(async (mod) => {
                 try {
                     const filesResponse: any = await ai.fileSearchStores.listFilesSearchStoreFiles({
@@ -149,16 +138,25 @@ export async function listAllModules(): Promise<TextbookModule[]> {
                     else if (filesResponse?.fileSearchStoreFiles) files = filesResponse.fileSearchStoreFiles;
                     else if (filesResponse?.files) files = filesResponse.files;
 
+                    // Strictly unique file names
+                    const bookNames = files.map((f: any) => f.displayName || 'Unnamed File');
+                    const uniqueBooks = Array.from(new Set([...bookNames, ...mod.books]))
+                                           .filter(b => b && !b.includes('...')); // Remove placeholder status items
+
                     return {
                         ...mod,
-                        books: files.length > 0 ? files.map((f: any) => f.displayName || 'Unnamed File') : mod.books
+                        books: uniqueBooks.length > 0 ? uniqueBooks : ['No files found']
                     };
                 } catch (e) {
                     return mod; 
                 }
             });
 
-            return await Promise.all(enrichedPromises);
+            const finalResults = await Promise.all(enrichedPromises);
+            
+            // Save cleaned state
+            localStorage.setItem(LOCAL_REGISTRY_KEY, JSON.stringify(finalResults));
+            return finalResults;
         } catch (err: any) {
             throw handleApiError(err, "listAllModules");
         }
@@ -172,8 +170,11 @@ export async function createRagStore(displayName: string): Promise<string> {
         const storeName = ragStore.name || "";
         
         const registry = JSON.parse(localStorage.getItem(LOCAL_REGISTRY_KEY) || '[]');
-        registry.push({ name: displayName, storeName: storeName, books: ['New Module Created...'] });
-        localStorage.setItem(LOCAL_REGISTRY_KEY, JSON.stringify(registry));
+        // Ensure we don't add a duplicate entry to local registry
+        if (!registry.some((r: any) => r.storeName === storeName)) {
+            registry.push({ name: displayName, storeName: storeName, books: ['New Module Created...'] });
+            localStorage.setItem(LOCAL_REGISTRY_KEY, JSON.stringify(registry));
+        }
         
         return storeName;
     } catch (err: any) {
@@ -194,7 +195,7 @@ export async function uploadToRagStore(ragStoreName: string, file: File): Promis
         throw handleApiError(err, "Upload request");
     }
 
-    if (!op || !op.name) throw new Error("Cloud upload rejected (Missing Op ID).");
+    if (!op || !op.name) throw new Error("Cloud upload rejected.");
     
     let retries = 0;
     const maxRetries = 30; 
@@ -204,40 +205,32 @@ export async function uploadToRagStore(ragStoreName: string, file: File): Promis
         try {
             const pollAi = new GoogleGenAI({ apiKey: process.env.API_KEY }) as any;
             const currentOp: any = await pollAi.operations.get({ name: op.name });
-            if (currentOp) {
-                op = currentOp;
-                if (op.done) {
-                    if (op.error) throw new Error(`Indexing error: ${op.error.message}`);
-                    
-                    const registry = JSON.parse(localStorage.getItem(LOCAL_REGISTRY_KEY) || '[]');
-                    const idx = registry.findIndex((r: any) => r.storeName === ragStoreName);
-                    if (idx !== -1) {
-                        if (!Array.isArray(registry[idx].books)) registry[idx].books = [];
-                        registry[idx].books = registry[idx].books.filter((b: string) => b.includes('...'));
-                        registry[idx].books.push(file.name);
+            if (currentOp?.done) {
+                if (currentOp.error) throw new Error(`Indexing error: ${currentOp.error.message}`);
+                
+                // Update local registry with unique books
+                const registry: TextbookModule[] = JSON.parse(localStorage.getItem(LOCAL_REGISTRY_KEY) || '[]');
+                const idx = registry.findIndex(r => r.storeName === ragStoreName);
+                if (idx !== -1) {
+                    const currentBooks = registry[idx].books.filter(b => !b.includes('...'));
+                    if (!currentBooks.includes(file.name)) {
+                        registry[idx].books = Array.from(new Set([...currentBooks, file.name]));
                         localStorage.setItem(LOCAL_REGISTRY_KEY, JSON.stringify(registry));
                     }
-                    return; 
                 }
+                return; 
             }
             retries++;
         } catch (pollErr: any) {
             retries++;
         }
     }
-    
-    throw new Error("INDEXING_TIMEOUT: Your book is uploaded. The cloud is busy indexing it; it will show up in your library automatically soon.");
 }
 
 const BASE_GROUNDING_INSTRUCTION = `You are JBDPRESS_GPT, a strict RAG-based Textbook Tutor. 
 CRITICAL RULE: Answer ONLY using the uploaded textbooks. Do not use outside knowledge.
 If information is missing, say: "I apologize, but this is not in the textbooks."`;
 
-/**
- * Performs search using the most optimized Gemini 3 Flash models.
- * Attempt 1: gemini-3-flash-preview (Latest Gemini 3)
- * Attempt 2+: gemini-flash-lite-latest (Stable Fallback)
- */
 export async function fileSearch(
     ragStoreName: string, 
     query: string, 
@@ -247,8 +240,6 @@ export async function fileSearch(
 ): Promise<QueryResult> {
     return withRetry(async (retryCount) => {
         const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-        
-        // Gemini 3 Flash is preferred for Basic Text/RAG tasks.
         const model = retryCount === 0 ? 'gemini-3-flash-preview' : 'gemini-flash-lite-latest';
         
         let instruction = BASE_GROUNDING_INSTRUCTION;
@@ -273,11 +264,11 @@ export async function fileSearch(
             });
 
             return {
-                text: response.text || "I found the textbooks, but couldn't find a direct answer to that specific question.",
+                text: response.text || "No direct answer found in the textbooks.",
                 groundingChunks: response.candidates?.[0]?.groundingMetadata?.groundingChunks || [],
             };
         } catch (err: any) {
-            throw handleApiError(err, `fileSearch (${model})`);
+            throw handleApiError(err, `fileSearch`);
         }
     });
 }
@@ -298,7 +289,8 @@ export async function generateExampleQuestions(ragStoreName: string): Promise<st
                     }
                 }
             });
-            return JSON.parse(response.text || "[]");
+            const q = JSON.parse(response.text || "[]");
+            return Array.from(new Set(q)); // Deduplicate questions
         } catch (err) {
             return ["What are the key goals?", "Summarize the introduction.", "Explain the main theory."];
         }

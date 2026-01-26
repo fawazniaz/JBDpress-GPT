@@ -77,7 +77,17 @@ const App: React.FC = () => {
         
         try {
             const modules = await geminiService.listAllModules();
-            setGlobalTextbooks(modules);
+            
+            // Final UI-side deduplication safeguard
+            const uniqueModulesMap = new Map();
+            modules.forEach(m => {
+                if (!uniqueModulesMap.has(m.storeName)) {
+                    uniqueModulesMap.set(m.storeName, m);
+                }
+            });
+            
+            setGlobalTextbooks(Array.from(uniqueModulesMap.values()));
+            
             if (modules.length > 0) {
                 setError(null);
                 if (status === AppStatus.Error) setStatus(AppStatus.Welcome);
