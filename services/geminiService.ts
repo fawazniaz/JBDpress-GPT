@@ -62,16 +62,16 @@ export async function listAllModules(): Promise<TextbookModule[]> {
 
         const modules: TextbookModule[] = [];
         
-        // Robust detection of stores across potential API variations
+        // Handle varied response formats (Array vs Object vs Iterator)
         let stores: any[] = [];
         if (Array.isArray(storesResponse)) {
             stores = storesResponse;
-        } else if (storesResponse?.fileSearchStores) {
+        } else if (storesResponse && storesResponse.fileSearchStores) {
             stores = storesResponse.fileSearchStores;
-        } else if (storesResponse?.stores) {
+        } else if (storesResponse && storesResponse.stores) {
             stores = storesResponse.stores;
-        } else if (storesResponse && typeof storesResponse[Symbol.iterator] === 'function') {
-            stores = Array.from(storesResponse);
+        } else if (storesResponse && typeof (storesResponse as any)[Symbol.iterator] === 'function') {
+            stores = Array.from(storesResponse as any);
         }
         
         if (stores.length === 0) {
@@ -87,9 +87,9 @@ export async function listAllModules(): Promise<TextbookModule[]> {
                 let files: any[] = [];
                 if (Array.isArray(filesResponse)) {
                     files = filesResponse;
-                } else if (filesResponse?.fileSearchStoreFiles) {
+                } else if (filesResponse && filesResponse.fileSearchStoreFiles) {
                     files = filesResponse.fileSearchStoreFiles;
-                } else if (filesResponse?.files) {
+                } else if (filesResponse && filesResponse.files) {
                     files = filesResponse.files;
                 }
 
@@ -146,7 +146,7 @@ export async function uploadToRagStore(ragStoreName: string, file: File): Promis
     if (!op || !op.name) throw new Error("UPLOAD_FAILED: Cloud did not return an operation ID.");
     
     let retries = 0;
-    const maxRetries = 240; // Extended to 20 minutes for very large textbooks
+    const maxRetries = 180; // 15 minutes (180 * 5s)
     
     while (retries < maxRetries) {
         await delay(5000); 
@@ -165,8 +165,6 @@ export async function uploadToRagStore(ragStoreName: string, file: File): Promis
         } catch (pollErr: any) {
             console.warn("Polling operation status failed, retrying...", pollErr);
             retries++;
-            // If we get consecutive failures, it might be a network glitch; keep trying.
-            await delay(2000);
         }
     }
     
