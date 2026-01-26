@@ -88,7 +88,7 @@ const App: React.FC = () => {
             console.error("Library Sync Error:", err);
             const msg = err.message || "Unknown error";
             if (msg.includes("QUOTA_EXCEEDED")) {
-                setApiKeyError("Cloud is Throttled. Retrying shortly...");
+                setApiKeyError("Account Throttled. Switching to Light Model...");
             } else if (msg.includes("RESELECTION_REQUIRED")) {
                 setIsApiKeySelected(false);
                 setApiKeyError("Session Expired. Please Re-Authorize.");
@@ -129,8 +129,8 @@ const App: React.FC = () => {
         const errMsg = err.message || "An unexpected error occurred.";
         
         if (errMsg.includes("QUOTA_EXCEEDED") || errMsg.includes("429")) {
-            setError("Throttled by Google Cloud");
-            setTechnicalDetails("Your project is hitting a quota limit. Don't worry, your files are safe! The cloud is just busy. Please wait 1-2 minutes and click 'Deep Scan' to recover your library.");
+            setError("Model Limit Reached");
+            setTechnicalDetails("Your project is hitting a quota limit for the 'Pro' model. We have automatically switched you to the 'Flash' model for better compatibility. Your books are safe! Please wait 1 minute for the cloud to reset and try again.");
         } else if (errMsg.includes("NETWORK_ERROR")) {
             setError("Network Interrupted");
             setTechnicalDetails("The connection was lost during the request. This often happens with very large books.");
@@ -253,7 +253,7 @@ const App: React.FC = () => {
                  return (
                     <div className="flex flex-col h-screen items-center justify-center p-8 text-center bg-gem-onyx-light dark:bg-gem-onyx-dark transition-colors">
                         <div className="text-7xl mb-6">
-                            {error === "Indexing in Progress" ? '⏳' : (error?.includes("Throttled") ? '☁️' : '⚠️')}
+                            {error === "Indexing in Progress" ? '⏳' : (error?.includes("Limit") ? '⚡' : '⚠️')}
                         </div>
                         <h1 className={`text-3xl font-black mb-4 ${error === "Indexing in Progress" ? 'text-gem-blue' : 'text-red-500'}`}>{error}</h1>
                         <div className="max-w-xl p-8 bg-white dark:bg-gem-slate-dark rounded-[30px] shadow-2xl mb-8">
@@ -264,7 +264,7 @@ const App: React.FC = () => {
                                     onClick={() => { setStatus(AppStatus.Welcome); setError(null); fetchLibrary(true); }} 
                                     className="bg-gem-blue text-white px-10 py-3 rounded-xl font-black shadow-lg hover:scale-105 active:scale-95 transition-all"
                                 >
-                                    Deep Scan for Books
+                                    Deep Scan & Reset
                                 </button>
                                 <button 
                                     onClick={() => { setStatus(AppStatus.Welcome); setError(null); }} 

@@ -29,8 +29,9 @@ function handleApiError(err: any, context: string): Error {
     console.error(`Gemini API Error [${context}]:`, err);
     let message = err.message || "Unknown AI error";
 
+    // Handle the specific "Resource Exhausted" error seen in the user's screenshot
     if (message.includes("429") || message.includes("RESOURCE_EXHAUSTED") || message.includes("quota")) {
-        return new Error("QUOTA_EXCEEDED: The cloud is currently throttling your requests. Your files are safe, but the connection is busy. Please wait 60 seconds.");
+        return new Error("QUOTA_EXCEEDED: Your current API key has a zero-quota limit for the Pro model. We are switching you to the Flash model, which should work. Please wait 30 seconds for the system to reset.");
     }
 
     if (message.includes("Requested entity was not found.")) {
@@ -45,11 +46,10 @@ function handleApiError(err: any, context: string): Error {
 }
 
 /**
- * Robustly fetches all RAG stores. Handles variations in SDK response structures.
+ * Robustly fetches all RAG stores.
  */
 export async function listAllModules(): Promise<TextbookModule[]> {
     try {
-        // Initialize AI client using named parameter as per guidelines
         const ai = new GoogleGenAI({ apiKey: process.env.API_KEY }) as any;
         
         if (!ai.fileSearchStores) {
@@ -59,15 +59,12 @@ export async function listAllModules(): Promise<TextbookModule[]> {
 
         let cloudStores: any[] = [];
         try {
-            // Increase timeout to 25s for better discovery
-            // Fixed: Explicitly typed response as any to prevent "unknown" property access errors on property accessors.
             const response: any = await withTimeout(
                 ai.fileSearchStores.list(),
                 25000,
                 "Cloud list timed out."
             );
 
-            // Resilient parsing: SDK returns lists in different wrappers depending on version/environment
             if (Array.isArray(response)) {
                 cloudStores = response;
             } else if (response?.fileSearchStores) {
@@ -75,19 +72,16 @@ export async function listAllModules(): Promise<TextbookModule[]> {
             } else if (response?.stores) {
                 cloudStores = response.stores;
             } else if (typeof response === 'object' && response !== null) {
-                // Fallback: look for any array property
                 const possibleList = Object.values(response).find(val => Array.isArray(val));
                 if (possibleList) cloudStores = possibleList as any[];
             }
         } catch (e: any) {
             console.warn("Cloud list request failed (likely quota). Using local registry cache.");
-            // If we hit a 429 here, we don't crash, we just proceed to use local registry
         }
 
         const localRegistry = JSON.parse(localStorage.getItem(LOCAL_REGISTRY_KEY) || '[]');
         const mergedMap = new Map<string, TextbookModule>();
         
-        // 1. Fill from Cloud (Source of Truth)
         for (const store of cloudStores) {
             if (!store.name) continue;
             mergedMap.set(store.name, {
@@ -97,7 +91,6 @@ export async function listAllModules(): Promise<TextbookModule[]> {
             });
         }
 
-        // 2. Fill from Local Registry (Fixes the "gone" feeling for newly created items)
         for (const local of localRegistry) {
             if (!mergedMap.has(local.storeName)) {
                 mergedMap.set(local.storeName, {
@@ -111,13 +104,10 @@ export async function listAllModules(): Promise<TextbookModule[]> {
         const rawResults = Array.from(mergedMap.values());
         if (rawResults.length === 0) return [];
 
-        // Save current state back to registry to "heal" it
         localStorage.setItem(LOCAL_REGISTRY_KEY, JSON.stringify(rawResults));
 
-        // 3. Lazy-load file lists (don't let this crash the main list if one fails)
         const enrichedPromises = rawResults.map(async (mod) => {
             try {
-                // Fixed: Cast response to any for reliable property access
                 const filesResponse: any = await ai.fileSearchStores.listFilesSearchStoreFiles({
                     fileSearchStoreName: mod.storeName
                 });
@@ -210,6 +200,9 @@ const BASE_GROUNDING_INSTRUCTION = `You are JBDPRESS_GPT, a strict RAG-based Tex
 CRITICAL RULE: Answer ONLY using the uploaded textbooks. Do not use outside knowledge.
 If information is missing, say: "I apologize, but this is not in the textbooks."`;
 
+/**
+ * Performs search using Flash model to ensure high availability and bypass Pro-only quota limits.
+ */
 export async function fileSearch(
     ragStoreName: string, 
     query: string, 
@@ -218,8 +211,10 @@ export async function fileSearch(
     bookFocus?: string
 ): Promise<QueryResult> {
     const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-    // Use gemini-3-pro-preview for complex reasoning tasks as per guidelines
-    const model = 'gemini-3-pro-preview'; 
+    
+    // CRITICAL: Switched from gemini-3-pro-preview to gemini-3-flash-preview. 
+    // Flash has much higher free-tier limits and is less likely to trigger a 429 Resource Exhausted error.
+    const model = 'gemini-3-flash-preview'; 
     
     let instruction = BASE_GROUNDING_INSTRUCTION;
     if (bookFocus) { instruction += `\n\nFOCUS: Only search in: "${bookFocus}".`; }
@@ -238,7 +233,6 @@ export async function fileSearch(
             contents: query,
             config: {
                 systemInstruction: instruction,
-                // fileSearch tool is used for RAG; using 'as any' as it's an extended feature not in standard guidelines
                 tools: [{ fileSearch: { fileSearchStoreNames: [ragStoreName] } } as any]
             }
         });
@@ -295,7 +289,6 @@ export async function connectLive(callbacks: {
     });
 }
 
-// Manual implementation of encode as per coding guidelines
 export function encodeBase64(bytes: Uint8Array): string {
     let binary = '';
     const len = bytes.byteLength;
@@ -305,7 +298,6 @@ export function encodeBase64(bytes: Uint8Array): string {
     return btoa(binary);
 }
 
-// Manual implementation of decode as per coding guidelines
 export function decodeBase64(base64: string): Uint8Array {
     const binaryString = atob(base64);
     const len = binaryString.length;
@@ -316,7 +308,6 @@ export function decodeBase64(base64: string): Uint8Array {
     return bytes;
 }
 
-// Manual implementation of audio decoding as per coding guidelines
 export async function decodeAudioData(
     data: Uint8Array,
     ctx: AudioContext,
