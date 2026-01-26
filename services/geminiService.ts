@@ -1,4 +1,3 @@
-
 /**
  * @license
  * SPDX-License-Identifier: Apache-2.0
@@ -48,7 +47,6 @@ function handleApiError(err: any, context: string): Error {
  */
 export async function listAllModules(): Promise<TextbookModule[]> {
     try {
-        // Correct initialization with named parameter. Use 'as any' as property is dynamic or custom.
         const ai = new GoogleGenAI({ apiKey: process.env.API_KEY }) as any;
         
         if (!ai.fileSearchStores) {
@@ -56,7 +54,6 @@ export async function listAllModules(): Promise<TextbookModule[]> {
             return [];
         }
 
-        // Fix: Explicitly cast the response to any to resolve 'unknown' property access errors.
         const storesResponse = (await withTimeout(
             ai.fileSearchStores.list(),
             30000,
@@ -65,16 +62,16 @@ export async function listAllModules(): Promise<TextbookModule[]> {
 
         const modules: TextbookModule[] = [];
         
-        // Handle varied response formats (Array vs Object vs Iterator)
+        // Robust detection of stores across potential API variations
         let stores: any[] = [];
         if (Array.isArray(storesResponse)) {
             stores = storesResponse;
-        } else if (storesResponse && storesResponse.fileSearchStores) {
+        } else if (storesResponse?.fileSearchStores) {
             stores = storesResponse.fileSearchStores;
-        } else if (storesResponse && storesResponse.stores) {
+        } else if (storesResponse?.stores) {
             stores = storesResponse.stores;
-        } else if (storesResponse && typeof (storesResponse as any)[Symbol.iterator] === 'function') {
-            stores = Array.from(storesResponse as any);
+        } else if (storesResponse && typeof storesResponse[Symbol.iterator] === 'function') {
+            stores = Array.from(storesResponse);
         }
         
         if (stores.length === 0) {
@@ -83,7 +80,6 @@ export async function listAllModules(): Promise<TextbookModule[]> {
 
         for (const store of stores) {
             try {
-                // Fix: Cast internal file listing response to any to handle unknown properties.
                 const filesResponse = (await ai.fileSearchStores.listFilesSearchStoreFiles({
                     fileSearchStoreName: store.name!
                 })) as any;
@@ -91,9 +87,9 @@ export async function listAllModules(): Promise<TextbookModule[]> {
                 let files: any[] = [];
                 if (Array.isArray(filesResponse)) {
                     files = filesResponse;
-                } else if (filesResponse && filesResponse.fileSearchStoreFiles) {
+                } else if (filesResponse?.fileSearchStoreFiles) {
                     files = filesResponse.fileSearchStoreFiles;
-                } else if (filesResponse && filesResponse.files) {
+                } else if (filesResponse?.files) {
                     files = filesResponse.files;
                 }
 
@@ -150,7 +146,7 @@ export async function uploadToRagStore(ragStoreName: string, file: File): Promis
     if (!op || !op.name) throw new Error("UPLOAD_FAILED: Cloud did not return an operation ID.");
     
     let retries = 0;
-    const maxRetries = 180; // 15 minutes (180 * 5s)
+    const maxRetries = 240; // Extended to 20 minutes for very large textbooks
     
     while (retries < maxRetries) {
         await delay(5000); 
@@ -169,6 +165,8 @@ export async function uploadToRagStore(ragStoreName: string, file: File): Promis
         } catch (pollErr: any) {
             console.warn("Polling operation status failed, retrying...", pollErr);
             retries++;
+            // If we get consecutive failures, it might be a network glitch; keep trying.
+            await delay(2000);
         }
     }
     
