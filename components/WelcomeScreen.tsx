@@ -1,3 +1,4 @@
+
 import React from 'react';
 import { User, TextbookModule } from '../types';
 import { UploadCloudIcon, TrashIcon, RefreshIcon } from './Icons';
@@ -6,8 +7,8 @@ import Spinner from './Spinner';
 interface WelcomeScreenProps {
     user: User;
     onUpload: () => Promise<void>;
-    onDeleteModule?: (storeName: string) => void;
-    onEnterChat: (storeName: string, name: string) => void;
+    onDeleteModule: (storeName: string) => void;
+    onEnterChat: (storeName: string) => void;
     onOpenDashboard: () => void;
     textbooks: TextbookModule[];
     isLibraryLoading: boolean;
@@ -27,6 +28,11 @@ const WelcomeScreen: React.FC<WelcomeScreenProps> = ({
 }) => {
     return (
         <div className="flex flex-col h-screen">
+            {isLibraryLoading && (
+                <div className="bg-gem-blue text-white text-[10px] font-black py-1 px-4 text-center animate-pulse flex items-center justify-center gap-2">
+                    <Spinner /> <span>SYNCHRONIZING REPOSITORY WITH CLOUD...</span>
+                </div>
+            )}
             <header className="flex justify-between items-center p-6 border-b border-gem-mist-light dark:border-gem-mist-dark bg-white/80 dark:bg-gem-slate-dark/80 backdrop-blur-md">
                 <div className="flex items-center space-x-3">
                     <span className="text-2xl font-black text-gem-blue">JBD</span>
@@ -38,115 +44,91 @@ const WelcomeScreen: React.FC<WelcomeScreenProps> = ({
                     </button>
                     <div className="text-right hidden sm:block">
                         <p className="text-xs font-bold">{user.email}</p>
-                        <p className="text-[10px] opacity-50">{user.role.toUpperCase()} • {user.schoolName}</p>
+                        <p className="text-[10px] opacity-50 uppercase tracking-tighter">{user.role} • {user.schoolName}</p>
                     </div>
                     <button onClick={onLogout} className="text-xs font-bold text-red-500 hover:underline">Log Out</button>
                 </div>
             </header>
 
             <div className="flex-grow overflow-y-auto p-6 lg:p-12">
-                <div className="max-w-5xl mx-auto grid grid-cols-1 lg:grid-cols-2 gap-12">
+                <div className="max-w-6xl mx-auto grid grid-cols-1 lg:grid-cols-2 gap-12">
                     <div className="space-y-8">
-                        <div className="flex justify-between items-end">
-                            <div>
-                                <h2 className="text-3xl font-black mb-2 flex items-center gap-3">
-                                    Course Library
-                                    <button onClick={onRefreshLibrary} disabled={isLibraryLoading} className={`p-2 rounded-full hover:bg-gem-blue/5 transition-all ${isLibraryLoading ? 'animate-spin' : ''}`}>
-                                        <RefreshIcon />
-                                    </button>
-                                </h2>
-                                <p className="opacity-60">Access your digital textbooks and study materials.</p>
-                            </div>
+                        <div>
+                            <h2 className="text-4xl font-black mb-4 flex items-center gap-3">
+                                Course Library
+                                <button onClick={onRefreshLibrary} className="p-2 hover:bg-gem-blue/5 rounded-full"><RefreshIcon /></button>
+                            </h2>
+                            <p className="opacity-60 text-sm">Access your digital textbooks. Cloud storage is shared across all modules.</p>
                         </div>
 
                         <div className="grid grid-cols-1 gap-4">
-                            {isLibraryLoading ? (
-                                <div className="flex flex-col items-center py-12 opacity-40">
-                                    <Spinner />
-                                    <p className="text-xs mt-4 font-bold">Synchronizing Library...</p>
-                                </div>
-                            ) : textbooks.length === 0 ? (
-                                <div className="p-12 border-2 border-dashed border-gem-mist-light dark:border-gem-mist-dark rounded-3xl text-center opacity-40">
-                                    <p>No textbooks found. Use the panel on the right to upload some.</p>
+                            {textbooks.length === 0 && !isLibraryLoading ? (
+                                <div className="p-16 border-2 border-dashed border-gem-mist-light dark:border-gem-mist-dark rounded-[32px] text-center opacity-30">
+                                    <div className="text-4xl mb-4">📂</div>
+                                    <p className="font-bold">Repository Empty</p>
                                 </div>
                             ) : (
                                 textbooks.map((lib, idx) => (
                                     <div 
                                         key={idx}
-                                        className="group relative p-6 bg-white dark:bg-gem-slate-dark border border-gem-mist-light dark:border-gem-mist-dark rounded-3xl text-left hover:border-gem-blue transition-all hover:shadow-xl cursor-pointer"
-                                        onClick={() => onEnterChat(lib.storeName, lib.name)}
+                                        className="group p-6 bg-white dark:bg-gem-slate-dark border border-gem-mist-light dark:border-gem-mist-dark rounded-[32px] hover:border-gem-blue transition-all hover:shadow-2xl cursor-pointer"
+                                        onClick={() => onEnterChat(lib.storeName)}
                                     >
-                                        <div className="flex justify-between items-start">
-                                            <div className="w-12 h-12 bg-gem-blue/5 rounded-xl flex items-center justify-center text-2xl mb-4">📖</div>
-                                            <div className="flex items-center gap-2">
-                                                {user.role === 'admin' && onDeleteModule && (
-                                                    <button 
-                                                        onClick={(e) => {
-                                                            e.stopPropagation();
-                                                            if (window.confirm(`Are you sure you want to delete "${lib.name}"? This will free up storage but the files will be permanently removed.`)) {
-                                                                onDeleteModule(lib.storeName);
-                                                            }
-                                                        }}
-                                                        className="p-2 text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-xl transition-colors"
-                                                        title="Delete Module"
-                                                    >
-                                                        <TrashIcon />
-                                                    </button>
-                                                )}
-                                                <span className="text-[10px] font-black bg-gem-blue/10 text-gem-blue px-2 py-1 rounded">ACTIVE</span>
-                                            </div>
+                                        <div className="flex justify-between items-start mb-6">
+                                            <div className="w-14 h-14 bg-gem-blue/5 rounded-2xl flex items-center justify-center text-3xl">📘</div>
+                                            {user.role === 'admin' && (
+                                                <button onClick={(e) => { e.stopPropagation(); if(confirm("Delete this module?")) onDeleteModule(lib.storeName); }} className="p-3 bg-red-500/10 text-red-500 rounded-xl hover:bg-red-500 hover:text-white transition-all">
+                                                    <TrashIcon />
+                                                </button>
+                                            )}
                                         </div>
-                                        <h3 className="font-bold text-lg leading-tight mb-2 truncate">{lib.name}</h3>
-                                        <p className="text-[10px] opacity-40 mb-3 truncate">{lib.books.length} files attached</p>
-                                        <div className="text-xs font-bold text-gem-blue">Start Session →</div>
+                                        <h3 className="font-black text-xl mb-1 truncate">{lib.name}</h3>
+                                        <p className="text-[10px] font-bold opacity-40 uppercase mb-4">{lib.books.length} Textbooks attached</p>
+                                        <div className="text-xs font-black text-gem-blue group-hover:translate-x-2 transition-transform">STUDY NOW →</div>
                                     </div>
                                 ))
                             )}
                         </div>
 
                         {user.role === 'admin' && (
-                            <button onClick={onOpenDashboard} className="w-full p-4 bg-gem-teal text-white font-bold rounded-2xl flex items-center justify-center space-x-2 shadow-lg hover:brightness-110 active:scale-95 transition-all">
-                                📊 <span>Admin Settings & Health Check</span>
+                            <button onClick={onOpenDashboard} className="w-full p-6 bg-gem-teal text-white font-black rounded-3xl flex items-center justify-center gap-3 shadow-xl hover:brightness-110 active:scale-95 transition-all">
+                                📊 Admin Settings & Health Check
                             </button>
                         )}
                     </div>
 
-                    <div className="bg-gem-mist-light/20 dark:bg-gem-mist-dark/20 p-8 rounded-3xl border border-gem-mist-light dark:border-gem-mist-dark">
+                    <div className="bg-white dark:bg-gem-slate-dark p-10 rounded-[40px] border border-gem-mist-light dark:border-gem-mist-dark shadow-2xl">
                         {user.role === 'admin' ? (
-                            <div className="space-y-6">
-                                <h3 className="text-xl font-black">Admin: Upload Module</h3>
-                                {!isApiKeySelected ? (
-                                    <button onClick={onSelectKey} className="w-full p-4 bg-gem-blue text-white font-bold rounded-xl shadow-md">Authorize API Access</button>
-                                ) : (
-                                    <div className="p-3 bg-emerald-500/10 text-emerald-500 text-xs font-black text-center rounded-xl border border-emerald-500/30">SYSTEM READY</div>
-                                )}
+                            <div className="space-y-8">
+                                <h3 className="text-2xl font-black">Publish Module</h3>
+                                {!isApiKeySelected && <button onClick={onSelectKey} className="w-full p-4 bg-gem-blue text-white font-bold rounded-2xl">Authorize Gemini Access</button>}
                                 
-                                <div className="border-2 border-dashed border-gem-mist-light dark:border-gem-mist-dark rounded-2xl p-8 text-center bg-white/50 dark:bg-black/20">
+                                <div className="border-2 border-dashed border-gem-mist-light dark:border-gem-mist-dark rounded-3xl p-12 text-center hover:border-gem-blue transition-colors bg-gem-onyx-light dark:bg-black/10">
                                     <input type="file" multiple id="file-up" className="hidden" onChange={e => setFiles(prev => [...prev, ...Array.from(e.target.files!)])}/>
                                     <label htmlFor="file-up" className="cursor-pointer flex flex-col items-center">
                                         <UploadCloudIcon />
-                                        <span className="mt-4 font-bold">Upload Course PDFs</span>
-                                        <p className="text-[10px] mt-2 opacity-50">Storage is limited to 1GB across all modules.</p>
+                                        <span className="mt-4 font-black text-lg">Add Textbook Files</span>
+                                        <p className="text-[10px] opacity-50 mt-2 uppercase font-black">1GB Cloud Quota Limit</p>
                                     </label>
                                 </div>
 
                                 {files.length > 0 && (
-                                    <div className="space-y-3">
+                                    <div className="space-y-4">
                                         {files.map((f, i) => (
-                                            <div key={i} className="flex justify-between items-center p-3 bg-white dark:bg-gem-slate-dark rounded-xl text-sm">
+                                            <div key={i} className="flex justify-between items-center p-4 bg-gem-onyx-light dark:bg-gem-mist-dark/30 rounded-2xl text-xs font-bold">
                                                 <span className="truncate">{f.name}</span>
                                                 <button onClick={() => setFiles(prev => prev.filter((_, idx) => idx !== i))} className="text-red-500"><TrashIcon /></button>
                                             </div>
                                         ))}
-                                        <button onClick={onUpload} className="w-full py-4 bg-gem-blue text-white font-black rounded-xl shadow-xl">Publish to Students</button>
+                                        <button onClick={onUpload} className="w-full py-5 bg-gem-blue text-white font-black rounded-2xl shadow-2xl hover:scale-105 active:scale-95 transition-all">START UPLOAD</button>
                                     </div>
                                 )}
                             </div>
                         ) : (
-                            <div className="flex flex-col items-center justify-center h-full text-center space-y-4 p-8">
-                                <div className="text-6xl">✨</div>
-                                <h3 className="text-xl font-bold">Learning Hub</h3>
-                                <p className="text-sm opacity-60">Use the library on the left to start a focused study session with your textbooks.</p>
+                            <div className="flex flex-col items-center justify-center h-full text-center p-8">
+                                <div className="text-8xl mb-8">✨</div>
+                                <h3 className="text-2xl font-black mb-4">Student Hub</h3>
+                                <p className="opacity-60 text-sm leading-relaxed">Select a course from the library to start a focused, textbook-only AI study session.</p>
                             </div>
                         )}
                     </div>

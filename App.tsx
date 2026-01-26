@@ -72,26 +72,18 @@ const App: React.FC = () => {
         
         loadingRef.current = true;
         setIsLibraryLoading(true);
-        setApiKeyError(null);
         
         try {
             const modules = await geminiService.listAllModules();
-            const uniqueModulesMap = new Map();
-            modules.forEach(m => {
-                if (m.storeName && !uniqueModulesMap.has(m.storeName)) {
-                    uniqueModulesMap.set(m.storeName, m);
-                }
-            });
-            const uniqueList = Array.from(uniqueModulesMap.values());
-            setGlobalTextbooks(uniqueList);
+            setGlobalTextbooks(modules);
         } catch (err: any) {
             console.error("Library Sync Failure:", err);
-            setApiKeyError(`Sync status: Local library active.`);
+            setApiKeyError(`Sync status: Offline mode active.`);
         } finally {
             setIsLibraryLoading(false);
             loadingRef.current = false;
         }
-    }, []); // Empty deps to prevent identity-based loops
+    }, []);
 
     useEffect(() => {
         if (status === AppStatus.Welcome && isApiKeySelected) {
@@ -127,9 +119,9 @@ const App: React.FC = () => {
         console.error("Application Error:", err);
         let errMsg = err.message || "An unexpected error occurred.";
         
-        if (errMsg.includes("RESOURCE_EXHAUSTED") || errMsg.includes("429") || errMsg.includes("storage limit")) {
+        if (errMsg.includes("RESOURCE_EXHAUSTED") || errMsg.includes("429")) {
             customTitle = "Storage Limit Reached";
-            errMsg = "You have used your 1GB free storage limit for textbooks. \n\nTo upload new files, please go to 'Admin Dashboard' and delete some older course modules.";
+            errMsg = "Your 1GB free cloud quota is full. You must delete some textbooks from the Admin Dashboard to continue.";
         }
 
         setError(customTitle || "Operation Blocked");
@@ -138,10 +130,7 @@ const App: React.FC = () => {
     };
 
     const handleUploadTextbooks = async () => {
-        if (!isApiKeySelected) {
-            setApiKeyError("API Key required.");
-            return;
-        }
+        if (!isApiKeySelected) return;
         if (files.length === 0) return;
         setStatus(AppStatus.Uploading);
         try {
@@ -182,6 +171,18 @@ const App: React.FC = () => {
         }
     };
 
+    const handleDeleteFile = async (storeName: string, fileName: string) => {
+        setIsLibraryLoading(true);
+        try {
+            await geminiService.deleteFileFromStore(storeName, fileName);
+            await fetchLibrary(true);
+        } catch (err: any) {
+            handleError(err, "File Delete Failed");
+        } finally {
+            setIsLibraryLoading(false);
+        }
+    };
+
     const renderContent = () => {
         switch(status) {
             case AppStatus.Initializing:
@@ -194,7 +195,7 @@ const App: React.FC = () => {
                         user={user!}
                         onUpload={handleUploadTextbooks}
                         onDeleteModule={handleDeleteModule}
-                        onEnterChat={(store, name) => {
+                        onEnterChat={(store) => {
                             const mod = globalTextbooks.find(t => t.storeName === store);
                             if (mod) {
                                 setActiveModule(mod);
@@ -227,7 +228,10 @@ const App: React.FC = () => {
                 return <AdminDashboard 
                     textbooks={globalTextbooks} 
                     onDeleteModule={handleDeleteModule} 
+                    onDeleteFile={handleDeleteFile}
                     onClose={() => setStatus(AppStatus.Welcome)} 
+                    onDeepSync={() => fetchLibrary(true)}
+                    isSyncing={isLibraryLoading}
                 />;
             case AppStatus.Uploading:
                 return <ProgressBar progress={uploadProgress?.current || 0} total={uploadProgress?.total || 1} message={uploadProgress?.message || "Uploading..."} fileName={uploadProgress?.fileName} />;
@@ -259,16 +263,24 @@ const App: React.FC = () => {
                  return (
                     <div className="flex flex-col h-screen items-center justify-center p-8 text-center bg-gem-onyx-light dark:bg-gem-onyx-dark transition-colors">
                         <div className="text-7xl mb-6">⚠️</div>
-                        <h1 className="text-3xl font-black mb-4 text-red-500">{error}</h1>
-                        <div className="max-w-xl p-8 bg-white dark:bg-gem-slate-dark rounded-[30px] shadow-2xl mb-8">
+                        <h1 className="text-3xl font-black mb-4 text-red-500 uppercase tracking-tighter">{error}</h1>
+                        <div className="max-w-xl p-8 bg-white dark:bg-gem-slate-dark rounded-[30px] shadow-2xl mb-8 border border-gem-mist-light dark:border-gem-mist-dark">
                             <p className="font-bold text-gem-blue mb-4">Notification:</p>
-                            <p className="text-sm opacity-70 mb-6 leading-relaxed whitespace-pre-wrap">{technicalDetails}</p>
-                            <button 
-                                onClick={() => { setStatus(AppStatus.Welcome); setError(null); }} 
-                                className="bg-gem-blue text-white px-10 py-3 rounded-xl font-black shadow-lg hover:scale-105 active:scale-95 transition-all"
-                            >
-                                Back to Start
-                            </button>
+                            <p className="text-sm opacity-70 mb-8 leading-relaxed whitespace-pre-wrap">{technicalDetails}</p>
+                            <div className="flex flex-col sm:flex-row gap-4 justify-center">
+                                <button 
+                                    onClick={() => setStatus(AppStatus.AdminDashboard)} 
+                                    className="bg-gem-teal text-white px-8 py-4 rounded-2xl font-black shadow-lg hover:scale-105 active:scale-95 transition-all"
+                                >
+                                    Go to Admin Dashboard
+                                </button>
+                                <button 
+                                    onClick={() => { setStatus(AppStatus.Welcome); setError(null); }} 
+                                    className="bg-gem-mist-light dark:bg-gem-mist-dark px-8 py-4 rounded-2xl font-black hover:bg-gem-blue hover:text-white transition-all"
+                                >
+                                    Back to Start
+                                </button>
+                            </div>
                         </div>
                     </div>
                  );
