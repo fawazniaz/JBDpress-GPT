@@ -77,12 +77,16 @@ const App: React.FC = () => {
             setGlobalTextbooks(modules);
             setCloudFiles(rawFiles);
         } catch (err: any) {
-            console.warn("Library Sync Warning:", err);
+            console.warn("Background Sync Warning:", err);
             const msg = err.message || "";
             if (msg.includes("RESOURCE_EXHAUSTED") || msg.includes("429")) {
-                setSyncError("Cloud storage is currently full or busy. You can still manage existing files.");
+                if (msg.toLowerCase().includes("quota") || msg.toLowerCase().includes("storage")) {
+                    setSyncError("Cloud storage is currently showing as full. Management is still possible.");
+                } else {
+                    setSyncError("Rate limit reached. Data display may be incomplete.");
+                }
             } else {
-                setSyncError("Synchronization limited. Try refreshing in a few moments.");
+                setSyncError("Sync interrupted. Check connection.");
             }
         } finally {
             setIsLibraryLoading(false);
@@ -104,15 +108,20 @@ const App: React.FC = () => {
     };
 
     const handleError = (err: any, customTitle?: string) => {
-        console.error("Critical Operation Failure:", err);
+        console.error("Operation Failure:", err);
         let errMsg = err.message || "An unexpected error occurred.";
         
         if (errMsg.includes("RESOURCE_EXHAUSTED") || errMsg.includes("429")) {
-            customTitle = "Cloud Storage Busy";
-            errMsg = "The system is currently reporting a storage limit. This often persists for 1-2 minutes after a purge while the cloud updates.";
+            if (errMsg.toLowerCase().includes("storage") || errMsg.toLowerCase().includes("quota")) {
+                customTitle = "Storage Limit Reached";
+                errMsg = "Your 1GB free cloud quota is full. Purge existing data to continue.";
+            } else {
+                customTitle = "System Throttled";
+                errMsg = "Too many requests. Please wait 60 seconds.";
+            }
         }
 
-        setError(customTitle || "Operation Blocked");
+        setError(customTitle || "Operation Error");
         setTechnicalDetails(errMsg);
         setStatus(AppStatus.Error);
     };
@@ -121,8 +130,8 @@ const App: React.FC = () => {
         if (!isApiKeySelected || files.length === 0) return;
         setStatus(AppStatus.Uploading);
         try {
-            const moduleLabel = prompt("Module Name:") || "New Course";
-            setUploadProgress({ current: 0, total: files.length, message: "Allocating Cloud Resources..." });
+            const moduleLabel = prompt("Course Folder Name:") || "New Module";
+            setUploadProgress({ current: 0, total: files.length, message: "Initializing Cloud Store..." });
             const ragStoreName = await geminiService.createRagStore(moduleLabel);
             for (let i = 0; i < files.length; i++) {
                 setUploadProgress({ current: i + 1, total: files.length, message: `Uploading ${files[i].name}...` });
@@ -132,7 +141,7 @@ const App: React.FC = () => {
             await fetchLibrary(true);
             setStatus(AppStatus.Welcome);
         } catch (err: any) { 
-            handleError(err, "Upload Failed"); 
+            handleError(err, "Upload Blocked"); 
         } finally { 
             setUploadProgress(null); 
         }
@@ -143,7 +152,7 @@ const App: React.FC = () => {
         try {
             await geminiService.deleteRagStore(storeName);
             await fetchLibrary(true);
-        } catch (err: any) { handleError(err, "Delete Failed"); }
+        } catch (err: any) { handleError(err, "Delete Failure"); }
         finally { setIsLibraryLoading(false); }
     };
 
@@ -152,12 +161,12 @@ const App: React.FC = () => {
         try {
             await geminiService.deleteRawFile(fileName);
             await fetchLibrary(true);
-        } catch (err: any) { handleError(err, "File Delete Failed"); }
+        } catch (err: any) { handleError(err, "Removal Failure"); }
         finally { setIsLibraryLoading(false); }
     };
 
     const handlePurgeAll = async () => {
-        if (!confirm("FORCE DELETE all data? This will clear your 1GB quota. Please allow 2 minutes for cloud refresh after completion.")) return;
+        if (!confirm("Are you sure? This deletes ALL data to clear your 1GB quota.")) return;
         setIsLibraryLoading(true);
         try {
             for (const store of globalTextbooks) {
@@ -168,14 +177,13 @@ const App: React.FC = () => {
                 await geminiService.deleteRawFile(file.name);
                 await new Promise(r => setTimeout(r, 600));
             }
-            // Clear local registry immediately
             localStorage.removeItem('JBDPRESS_STABLE_REGISTRY_FINAL');
-            await new Promise(r => setTimeout(r, 1000));
+            await new Promise(r => setTimeout(r, 1500));
             await fetchLibrary(true);
-            alert("All cloud files purged. IMPORTANT: Quota often takes 120 seconds to update on the server side.");
+            alert("Purge complete. Storage stats may take 120s to reflect on server.");
         } catch (err: any) { 
-            console.error("Purge partially failed:", err);
-            alert("Purge reached rate limits. Please try again to catch remaining files.");
+            console.error("Purge Error:", err);
+            alert("Some items failed to delete due to rate limits. Try again in 30 seconds.");
         } finally { 
             setIsLibraryLoading(false); 
         }

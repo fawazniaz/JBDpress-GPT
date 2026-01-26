@@ -20,7 +20,7 @@ async function delay(ms: number): Promise<void> {
 }
 
 /**
- * Exhaustively fetches all raw files in the project, handling pagination.
+ * Fetches all raw files in the project sequentially to avoid rate limiting.
  */
 export async function listAllCloudFiles(): Promise<CloudFile[]> {
     const ai = new GoogleGenAI({ apiKey: process.env.API_KEY }) as any;
@@ -31,17 +31,18 @@ export async function listAllCloudFiles(): Promise<CloudFile[]> {
     
     try {
         do {
-            const res: any = await ai.files.list({ pageToken, pageSize: 100 });
+            const res: any = await ai.files.list({ pageToken, pageSize: 50 });
             if (res.files) {
                 allFiles = [...allFiles, ...res.files];
             }
             pageToken = res.nextPageToken;
+            if (pageToken) await delay(500); // Throttling
         } while (pageToken);
         
         return allFiles;
     } catch (e) {
-        console.error("Failed to list raw files:", e);
-        return [];
+        console.error("Cloud Files Sync Error:", e);
+        throw e;
     }
 }
 
@@ -52,7 +53,7 @@ export async function deleteRawFile(fileName: string): Promise<void> {
 }
 
 /**
- * Exhaustively fetches all modules (RAG Stores), handling pagination.
+ * Fetches all modules and their file lists sequentially to avoid rate limits.
  */
 export async function listAllModules(): Promise<TextbookModule[]> {
     const localData = getLocalRepository();
@@ -63,37 +64,39 @@ export async function listAllModules(): Promise<TextbookModule[]> {
     let pageToken: string | undefined = undefined;
 
     try {
-        // 1. Fetch all stores across all pages
+        // 1. Fetch all store headers
         do {
-            const cloudResponse: any = await ai.fileSearchStores.list({ pageToken, pageSize: 50 });
+            const cloudResponse: any = await ai.fileSearchStores.list({ pageToken, pageSize: 20 });
             const stores = cloudResponse.fileSearchStores || cloudResponse.stores || [];
             allStores = [...allStores, ...stores];
             pageToken = cloudResponse.nextPageToken;
+            if (pageToken) await delay(500);
         } while (pageToken);
 
-        // 2. Fetch details for each store
-        const storeDetailPromises = allStores.map(async (s: any) => {
+        // 2. Fetch details for each store SEQUENTIALLY to avoid 429 errors
+        const results: TextbookModule[] = [];
+        for (const s of allStores) {
             try {
                 const filesRes: any = await ai.fileSearchStores.listFilesSearchStoreFiles({ 
                     fileSearchStoreName: s.name 
                 });
                 const files = filesRes.fileSearchStoreFiles || filesRes.files || [];
-                return {
+                results.push({
                     name: s.displayName || s.name.split('/').pop(),
                     storeName: s.name,
                     books: files.map((f: any) => f.displayName || f.name)
-                };
+                });
             } catch (e) {
-                return { name: s.displayName || s.name, storeName: s.name, books: [] };
+                results.push({ name: s.displayName || s.name, storeName: s.name, books: [] });
             }
-        });
+            await delay(300); // Throttling per store
+        }
 
-        const results = await Promise.all(storeDetailPromises);
         localStorage.setItem(STABLE_REGISTRY_KEY, JSON.stringify(results));
         return results;
     } catch (err) {
-        console.warn("Module Sync Interrupted:", err);
-        return localData;
+        console.warn("Module discovery throttled:", err);
+        throw err;
     }
 }
 
@@ -147,12 +150,12 @@ export async function fileSearch(ragStoreName: string, query: string, method: st
         model: 'gemini-3-flash-preview',
         contents: query,
         config: {
-            systemInstruction: `You are a textbook tutor. Only use uploaded material. Method: ${method}`,
+            systemInstruction: `You are a textbook tutor. Respond only based on materials provided in the search results. Teaching style: ${method}`,
             tools: [{ fileSearch: { fileSearchStoreNames: [ragStoreName] } } as any]
         }
     });
     return {
-        text: response.text || "No relevant data found in textbooks.",
+        text: response.text || "I couldn't find information about that in the textbooks.",
         groundingChunks: response.candidates?.[0]?.groundingMetadata?.groundingChunks || [],
     };
 }
@@ -170,7 +173,7 @@ export async function generateExampleQuestions(ragStoreName: string): Promise<st
             }
         });
         return JSON.parse(response.text || "[]");
-    } catch { return ["Analyze the core concepts."]; }
+    } catch { return ["What are the main topics?"]; }
 }
 
 export async function connectLive(callbacks: any, method: string = 'standard'): Promise<any> {
@@ -181,7 +184,7 @@ export async function connectLive(callbacks: any, method: string = 'standard'): 
         config: {
             responseModalities: [Modality.AUDIO],
             speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Puck' } } },
-            systemInstruction: `You are a textbook tutor using ${method} style.`,
+            systemInstruction: `Study assistant (${method}).`,
         }
     });
 }
