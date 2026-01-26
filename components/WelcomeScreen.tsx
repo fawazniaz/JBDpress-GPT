@@ -27,12 +27,20 @@ const WelcomeScreen: React.FC<WelcomeScreenProps> = ({
     user, onUpload, onDeleteModule, onEnterChat, onOpenDashboard, textbooks, isLibraryLoading, onRefreshLibrary, apiKeyError, files, setFiles, isApiKeySelected, onSelectKey, toggleDarkMode, isDarkMode, onLogout 
 }) => {
     return (
-        <div className="flex flex-col h-screen">
+        <div className="flex flex-col h-screen overflow-hidden">
             {isLibraryLoading && (
                 <div className="bg-gem-blue text-white text-[10px] font-black py-1 px-4 text-center animate-pulse flex items-center justify-center gap-2">
-                    <Spinner /> <span>SYNCHRONIZING REPOSITORY WITH CLOUD...</span>
+                    <Spinner /> <span>SYNCHRONIZING WITH CLOUD...</span>
                 </div>
             )}
+            {apiKeyError && !isLibraryLoading && (
+                <div className="bg-amber-500 text-white text-[11px] font-black py-2 px-6 text-center shadow-lg animate-bounce flex items-center justify-center gap-3">
+                    <span className="text-lg">⚠️</span> 
+                    <span>CLOUD QUOTA ALERT: {apiKeyError}</span>
+                    <button onClick={onOpenDashboard} className="underline hover:no-underline">OPEN ADMIN DASHBOARD</button>
+                </div>
+            )}
+            
             <header className="flex justify-between items-center p-6 border-b border-gem-mist-light dark:border-gem-mist-dark bg-white/80 dark:bg-gem-slate-dark/80 backdrop-blur-md">
                 <div className="flex items-center space-x-3">
                     <span className="text-2xl font-black text-gem-blue">JBD</span>
@@ -92,7 +100,7 @@ const WelcomeScreen: React.FC<WelcomeScreenProps> = ({
 
                         {user.role === 'admin' && (
                             <button onClick={onOpenDashboard} className="w-full p-6 bg-gem-teal text-white font-black rounded-3xl flex items-center justify-center gap-3 shadow-xl hover:brightness-110 active:scale-95 transition-all">
-                                📊 Admin Settings & Health Check
+                                📊 Admin Settings & Quota Manager
                             </button>
                         )}
                     </div>
@@ -100,15 +108,18 @@ const WelcomeScreen: React.FC<WelcomeScreenProps> = ({
                     <div className="bg-white dark:bg-gem-slate-dark p-10 rounded-[40px] border border-gem-mist-light dark:border-gem-mist-dark shadow-2xl">
                         {user.role === 'admin' ? (
                             <div className="space-y-8">
-                                <h3 className="text-2xl font-black">Publish Module</h3>
+                                <div className="flex justify-between items-center">
+                                    <h3 className="text-2xl font-black">Publish Module</h3>
+                                    {apiKeyError && <span className="text-[10px] font-bold text-amber-500">QUOTA AT RISK</span>}
+                                </div>
                                 {!isApiKeySelected && <button onClick={onSelectKey} className="w-full p-4 bg-gem-blue text-white font-bold rounded-2xl">Authorize Gemini Access</button>}
                                 
                                 <div className="border-2 border-dashed border-gem-mist-light dark:border-gem-mist-dark rounded-3xl p-12 text-center hover:border-gem-blue transition-colors bg-gem-onyx-light dark:bg-black/10">
-                                    <input type="file" multiple id="file-up" className="hidden" onChange={e => setFiles(prev => [...prev, ...Array.from(e.target.files!)])}/>
-                                    <label htmlFor="file-up" className="cursor-pointer flex flex-col items-center">
+                                    <input type="file" multiple id="file-up" className="hidden" onChange={e => setFiles(prev => [...prev, ...Array.from(e.target.files!)])} disabled={!!apiKeyError}/>
+                                    <label htmlFor="file-up" className={`flex flex-col items-center ${apiKeyError ? 'cursor-not-allowed opacity-30' : 'cursor-pointer'}`}>
                                         <UploadCloudIcon />
                                         <span className="mt-4 font-black text-lg">Add Textbook Files</span>
-                                        <p className="text-[10px] opacity-50 mt-2 uppercase font-black">1GB Cloud Quota Limit</p>
+                                        <p className="text-[10px] opacity-50 mt-2 uppercase font-black">1GB Quota • PDF/Docs only</p>
                                     </label>
                                 </div>
 

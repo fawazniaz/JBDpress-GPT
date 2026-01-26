@@ -28,7 +28,7 @@ const App: React.FC = () => {
     const [user, setUser] = useState<User | null>(null);
     const [isDarkMode, setIsDarkMode] = useState(false);
     const [isApiKeySelected, setIsApiKeySelected] = useState(false);
-    const [apiKeyError, setApiKeyError] = useState<string | null>(null);
+    const [syncError, setSyncError] = useState<string | null>(null);
     const [error, setError] = useState<string | null>(null);
     const [technicalDetails, setTechnicalDetails] = useState<string | null>(null);
     const [uploadProgress, setUploadProgress] = useState<{ current: number, total: number, message?: string, fileName?: string } | null>(null);
@@ -68,6 +68,7 @@ const App: React.FC = () => {
         if (loadingRef.current && !force) return;
         loadingRef.current = true;
         setIsLibraryLoading(true);
+        setSyncError(null);
         try {
             const [modules, rawFiles] = await Promise.all([
                 geminiService.listAllModules(),
@@ -76,16 +77,18 @@ const App: React.FC = () => {
             setGlobalTextbooks(modules);
             setCloudFiles(rawFiles);
         } catch (err: any) {
-            console.error("Library Sync Failure:", err);
-            // Don't show full error screen if we are in the Dashboard already
-            if (status !== AppStatus.AdminDashboard) {
-                handleError(err, "Sync Warning");
+            console.warn("Library Sync Warning:", err);
+            const msg = err.message || "";
+            if (msg.includes("RESOURCE_EXHAUSTED") || msg.includes("429")) {
+                setSyncError("Cloud storage is currently full or busy. You can still manage existing files.");
+            } else {
+                setSyncError("Synchronization limited. Try refreshing in a few moments.");
             }
         } finally {
             setIsLibraryLoading(false);
             loadingRef.current = false;
         }
-    }, [status]);
+    }, []);
 
     useEffect(() => {
         if (status === AppStatus.Welcome && isApiKeySelected) fetchLibrary();
@@ -101,18 +104,12 @@ const App: React.FC = () => {
     };
 
     const handleError = (err: any, customTitle?: string) => {
-        console.error("Application Error:", err);
+        console.error("Critical Operation Failure:", err);
         let errMsg = err.message || "An unexpected error occurred.";
         
-        // Detailed check for storage vs rate limit
         if (errMsg.includes("RESOURCE_EXHAUSTED") || errMsg.includes("429")) {
-            if (errMsg.toLowerCase().includes("quota") || errMsg.toLowerCase().includes("storage")) {
-                customTitle = "Storage Limit Reached";
-                errMsg = "Your 1GB cloud quota is full. Note: It may take up to 2 minutes for the cloud to reflect deletions.";
-            } else {
-                customTitle = "Rate Limit Reached";
-                errMsg = "Too many requests. Please wait 60 seconds and try again.";
-            }
+            customTitle = "Cloud Storage Busy";
+            errMsg = "The system is currently reporting a storage limit. This often persists for 1-2 minutes after a purge while the cloud updates.";
         }
 
         setError(customTitle || "Operation Blocked");
@@ -125,7 +122,7 @@ const App: React.FC = () => {
         setStatus(AppStatus.Uploading);
         try {
             const moduleLabel = prompt("Module Name:") || "New Course";
-            setUploadProgress({ current: 0, total: files.length, message: "Requesting Cloud Storage..." });
+            setUploadProgress({ current: 0, total: files.length, message: "Allocating Cloud Resources..." });
             const ragStoreName = await geminiService.createRagStore(moduleLabel);
             for (let i = 0; i < files.length; i++) {
                 setUploadProgress({ current: i + 1, total: files.length, message: `Uploading ${files[i].name}...` });
@@ -134,8 +131,11 @@ const App: React.FC = () => {
             setFiles([]);
             await fetchLibrary(true);
             setStatus(AppStatus.Welcome);
-        } catch (err: any) { handleError(err, "Upload Failed"); }
-        finally { setUploadProgress(null); }
+        } catch (err: any) { 
+            handleError(err, "Upload Failed"); 
+        } finally { 
+            setUploadProgress(null); 
+        }
     };
 
     const handleDeleteModule = async (storeName: string) => {
@@ -157,27 +157,25 @@ const App: React.FC = () => {
     };
 
     const handlePurgeAll = async () => {
-        if (!confirm("This will FORCE DELETE every file in your cloud account to reset your 1GB quota. Are you sure?")) return;
+        if (!confirm("FORCE DELETE all data? This will clear your 1GB quota. Please allow 2 minutes for cloud refresh after completion.")) return;
         setIsLibraryLoading(true);
         try {
-            // Throttled deletion to avoid 429 errors during purge
             for (const store of globalTextbooks) {
                 await geminiService.deleteRagStore(store.storeName);
-                await new Promise(r => setTimeout(r, 500));
+                await new Promise(r => setTimeout(r, 600));
             }
             for (const file of cloudFiles) {
                 await geminiService.deleteRawFile(file.name);
-                await new Promise(r => setTimeout(r, 500));
+                await new Promise(r => setTimeout(r, 600));
             }
-            
-            // Wait 2 seconds for cloud propagation before final sync
-            await new Promise(r => setTimeout(r, 2000));
+            // Clear local registry immediately
+            localStorage.removeItem('JBDPRESS_STABLE_REGISTRY_FINAL');
+            await new Promise(r => setTimeout(r, 1000));
             await fetchLibrary(true);
-            
-            alert("Storage Purge Complete. If 'Storage Full' persists, please wait 60 seconds for the cloud quota to refresh.");
+            alert("All cloud files purged. IMPORTANT: Quota often takes 120 seconds to update on the server side.");
         } catch (err: any) { 
-            console.error("Purge Error:", err);
-            alert("Purge partially failed due to rate limits. Please try again in a moment.");
+            console.error("Purge partially failed:", err);
+            alert("Purge reached rate limits. Please try again to catch remaining files.");
         } finally { 
             setIsLibraryLoading(false); 
         }
@@ -206,7 +204,7 @@ const App: React.FC = () => {
                     textbooks={globalTextbooks}
                     isLibraryLoading={isLibraryLoading}
                     onRefreshLibrary={() => fetchLibrary(true)}
-                    apiKeyError={apiKeyError}
+                    apiKeyError={syncError}
                     files={files}
                     setFiles={setFiles}
                     isApiKeySelected={isApiKeySelected}
@@ -253,10 +251,10 @@ const App: React.FC = () => {
                         <div className="text-7xl mb-6">⚠️</div>
                         <h1 className="text-3xl font-black mb-4 text-red-500 uppercase tracking-tighter">{error}</h1>
                         <div className="max-w-xl p-8 bg-white dark:bg-gem-slate-dark rounded-[30px] shadow-2xl border border-gem-mist-light dark:border-gem-mist-dark text-center">
-                            <p className="text-sm opacity-70 mb-8 leading-relaxed whitespace-pre-wrap font-bold">{technicalDetails}</p>
+                            <p className="text-sm opacity-70 mb-8 leading-relaxed font-bold">{technicalDetails}</p>
                             <div className="flex gap-4 justify-center">
                                 <button onClick={() => setStatus(AppStatus.AdminDashboard)} className="bg-gem-teal text-white px-8 py-4 rounded-2xl font-black shadow-lg">Go to Admin Dashboard</button>
-                                <button onClick={() => { setStatus(AppStatus.Welcome); setError(null); }} className="bg-gem-mist-light dark:bg-gem-mist-dark px-8 py-4 rounded-2xl font-black">Retry Welcome</button>
+                                <button onClick={() => { setStatus(AppStatus.Welcome); setError(null); fetchLibrary(true); }} className="bg-gem-mist-light dark:bg-gem-mist-dark px-8 py-4 rounded-2xl font-black">Force Return Home</button>
                             </div>
                         </div>
                     </div>
