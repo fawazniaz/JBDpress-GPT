@@ -31,7 +31,7 @@ function handleApiError(err: any, context: string): Error {
         return new Error("RESELECTION_REQUIRED: The selected API key was not found or is invalid for this project.");
     }
 
-    if (err.status === 403 || message.includes("API key not valid")) {
+    if (err.status === 403 || message.includes("API key not valid") || message.includes("PermissionDenied")) {
         return new Error("INVALID_KEY: Your API key was rejected. Ensure you have a paid-tier key and billing enabled.");
     }
 
@@ -43,42 +43,46 @@ function handleApiError(err: any, context: string): Error {
 }
 
 /**
- * Fetches all existing RAG stores from the cloud in parallel.
+ * Fetches all existing RAG stores from the cloud.
  */
 export async function listAllModules(): Promise<TextbookModule[]> {
     try {
         const ai = new GoogleGenAI({ apiKey: process.env.API_KEY }) as any;
         
         if (!ai.fileSearchStores) {
-            console.warn("RAG features unavailable on current SDK/Key.");
+            console.error("SDK Error: fileSearchStores property missing. Possible version conflict.");
             return [];
         }
 
         const storesResponse = (await withTimeout(
             ai.fileSearchStores.list(),
-            30000,
-            "Cloud sync timed out while fetching stores."
+            20000,
+            "Cloud sync timed out while fetching library list."
         )) as any;
 
-        // Robust detection: check all possible names for the stores list
-        let stores: any[] = [];
+        // Exhaustive check for stores in the response object
+        let rawStores: any[] = [];
         if (Array.isArray(storesResponse)) {
-            stores = storesResponse;
-        } else if (storesResponse?.fileSearchStores) {
-            stores = storesResponse.fileSearchStores;
-        } else if (storesResponse?.stores) {
-            stores = storesResponse.stores;
+            rawStores = storesResponse;
+        } else if (storesResponse?.fileSearchStores && Array.isArray(storesResponse.fileSearchStores)) {
+            rawStores = storesResponse.fileSearchStores;
+        } else if (storesResponse?.stores && Array.isArray(storesResponse.stores)) {
+            rawStores = storesResponse.stores;
         } else if (storesResponse && typeof storesResponse[Symbol.iterator] === 'function') {
-            stores = Array.from(storesResponse);
+            rawStores = Array.from(storesResponse);
         }
         
-        if (stores.length === 0) return [];
+        if (rawStores.length === 0) {
+            console.log("Gemini: Library is empty on cloud.");
+            return [];
+        }
 
-        // Fetch all module file lists in parallel for much faster library sync
-        const modulePromises = stores.map(async (store) => {
+        // Fetch all module file lists in parallel
+        const modulePromises = rawStores.map(async (store) => {
+            if (!store || !store.name) return null;
             try {
                 const filesResponse = (await ai.fileSearchStores.listFilesSearchStoreFiles({
-                    fileSearchStoreName: store.name!
+                    fileSearchStoreName: store.name
                 })) as any;
                 
                 let files: any[] = [];
@@ -92,20 +96,21 @@ export async function listAllModules(): Promise<TextbookModule[]> {
 
                 return {
                     name: store.displayName || 'Untitled Module',
-                    storeName: store.name!,
+                    storeName: store.name,
                     books: files.map((f: any) => f.displayName || 'Unnamed File')
                 };
             } catch (e) {
                 console.warn(`Could not list files for store ${store.name}:`, e);
                 return {
                     name: store.displayName || 'Untitled Module',
-                    storeName: store.name!,
+                    storeName: store.name,
                     books: []
                 };
             }
         });
 
-        return await Promise.all(modulePromises);
+        const results = await Promise.all(modulePromises);
+        return results.filter((m): m is TextbookModule => m !== null);
     } catch (err: any) {
         throw handleApiError(err, "listAllModules");
     }
@@ -146,21 +151,20 @@ export async function uploadToRagStore(ragStoreName: string, file: File): Promis
     
     // Step 2: Poll for Indexing completion
     let retries = 0;
-    const maxRetries = 180; // 15 minutes max
+    const maxRetries = 100; // ~8 minutes 
     
     while (retries < maxRetries) {
-        // Start with a shorter delay for small files, increasing slightly
-        const waitTime = retries < 5 ? 3000 : 5000;
+        const waitTime = retries < 10 ? 3000 : 5000;
         await delay(waitTime); 
         
         try {
-            const currentOp = await ai.operations.get({ name: op.name });
+            // Re-init AI on each poll to avoid stale session headers
+            const pollAi = new GoogleGenAI({ apiKey: process.env.API_KEY }) as any;
+            const currentOp = await pollAi.operations.get({ name: op.name });
             if (currentOp) {
                 op = currentOp;
                 if (op.done) {
-                    if (op.error) {
-                        throw new Error(`Cloud indexing error: ${op.error.message}`);
-                    }
+                    if (op.error) throw new Error(`Indexing Error: ${op.error.message}`);
                     return; 
                 }
             }
@@ -168,7 +172,6 @@ export async function uploadToRagStore(ragStoreName: string, file: File): Promis
         } catch (pollErr: any) {
             console.warn("Polling operation status failed, retrying...", pollErr);
             retries++;
-            // If we get consecutive failures, the key might have expired or connection lost
             if (retries > 10 && pollErr.message.includes("403")) throw pollErr;
         }
     }

@@ -72,14 +72,18 @@ const App: React.FC = () => {
         }
     }, [status, isApiKeySelected]);
 
-    const fetchLibrary = async () => {
-        if (isLibraryLoading) return;
+    const fetchLibrary = async (force: boolean = false) => {
+        if (isLibraryLoading && !force) return;
         setIsLibraryLoading(true);
         setApiKeyError(null);
         
         try {
             const modules = await geminiService.listAllModules();
             setGlobalTextbooks(modules);
+            if (modules.length > 0 && error === "Indexing in Progress") {
+                setError(null);
+                setStatus(AppStatus.Welcome);
+            }
         } catch (err: any) {
             console.error("Cloud Sync Failed:", err);
             if (err.message.includes("RESELECTION_REQUIRED")) {
@@ -152,32 +156,32 @@ const App: React.FC = () => {
         
         try {
             const moduleLabel = prompt("Library Folder Name:") || `Module ${globalTextbooks.length + 1}`;
-            setUploadProgress({ current: 0, total: files.length, message: "Handshaking with Cloud...", fileName: "Starting..." });
+            setUploadProgress({ current: 0, total: files.length, message: "Syncing with Cloud Repository...", fileName: "Handshake..." });
             
             const ragStoreName = await geminiService.createRagStore(moduleLabel);
             
             for (let i = 0; i < files.length; i++) {
                 const mb = (files[i].size / (1024 * 1024)).toFixed(1);
-                // Step-by-step progress
                 setUploadProgress({ 
                     current: i + 1, 
                     total: files.length, 
-                    message: `Sending Data (${mb} MB)...`, 
+                    message: `Step 1/2: Sending Data (${mb} MB)...`, 
                     fileName: files[i].name 
                 });
                 
-                // This wait is where the bulk of the time usually is (Indexing)
+                // Indexing phase
+                setUploadProgress({ 
+                    current: i + 1, 
+                    total: files.length, 
+                    message: `Step 2/2: Cloud Processing (Reading Content)...`, 
+                    fileName: files[i].name 
+                });
+                
                 await geminiService.uploadToRagStore(ragStoreName, files[i]);
-                
-                setUploadProgress({ 
-                    current: i + 1, 
-                    total: files.length, 
-                    message: `Cloud Indexing Complete!`, 
-                    fileName: files[i].name 
-                });
             }
             
-            await fetchLibrary();
+            // Force hard sync after all uploads
+            await fetchLibrary(true);
             setFiles([]);
             setStatus(AppStatus.Welcome);
         } catch (err: any) {
@@ -211,7 +215,7 @@ const App: React.FC = () => {
                         onOpenDashboard={() => setStatus(AppStatus.AdminDashboard)}
                         textbooks={globalTextbooks}
                         isLibraryLoading={isLibraryLoading}
-                        onRefreshLibrary={fetchLibrary}
+                        onRefreshLibrary={() => { setGlobalTextbooks([]); fetchLibrary(true); }}
                         apiKeyError={apiKeyError}
                         files={files}
                         setFiles={setFiles}
@@ -230,7 +234,7 @@ const App: React.FC = () => {
             case AppStatus.AdminDashboard:
                 return <AdminDashboard onClose={() => setStatus(AppStatus.Welcome)} />;
             case AppStatus.Uploading:
-                return <ProgressBar progress={uploadProgress?.current || 0} total={uploadProgress?.total || 1} message={uploadProgress?.message || "Uploading..."} fileName={uploadProgress?.fileName} />;
+                return <ProgressBar progress={uploadProgress?.current || 0} total={uploadProgress?.total || 1} message={uploadProgress?.message || "Processing..."} fileName={uploadProgress?.fileName} />;
             case AppStatus.Chatting:
                 return <ChatInterface 
                     user={user!}
@@ -264,7 +268,7 @@ const App: React.FC = () => {
                             <p className="font-bold text-gem-blue mb-4">Status Update:</p>
                             <p className="text-sm opacity-70 mb-6 leading-relaxed">{technicalDetails}</p>
                             <button 
-                                onClick={() => { setStatus(AppStatus.Welcome); setError(null); fetchLibrary(); }} 
+                                onClick={() => { setStatus(AppStatus.Welcome); setError(null); setGlobalTextbooks([]); fetchLibrary(true); }} 
                                 className="bg-gem-blue text-white px-10 py-3 rounded-xl font-black shadow-lg hover:scale-105 active:scale-95 transition-all"
                             >
                                 {error === "Indexing in Progress" ? 'Back to Library' : 'Try Again'}
