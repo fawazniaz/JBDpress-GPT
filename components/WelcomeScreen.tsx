@@ -6,6 +6,7 @@ import Spinner from './Spinner';
 interface WelcomeScreenProps {
     user: User;
     onUpload: () => Promise<void>;
+    onDeleteModule?: (storeName: string) => void;
     onEnterChat: (storeName: string, name: string) => void;
     onOpenDashboard: () => void;
     textbooks: TextbookModule[];
@@ -22,7 +23,7 @@ interface WelcomeScreenProps {
 }
 
 const WelcomeScreen: React.FC<WelcomeScreenProps> = ({ 
-    user, onUpload, onEnterChat, onOpenDashboard, textbooks, isLibraryLoading, onRefreshLibrary, apiKeyError, files, setFiles, isApiKeySelected, onSelectKey, toggleDarkMode, isDarkMode, onLogout 
+    user, onUpload, onDeleteModule, onEnterChat, onOpenDashboard, textbooks, isLibraryLoading, onRefreshLibrary, apiKeyError, files, setFiles, isApiKeySelected, onSelectKey, toggleDarkMode, isDarkMode, onLogout 
 }) => {
     return (
         <div className="flex flex-col h-screen">
@@ -70,18 +71,35 @@ const WelcomeScreen: React.FC<WelcomeScreenProps> = ({
                                 </div>
                             ) : (
                                 textbooks.map((lib, idx) => (
-                                    <button 
+                                    <div 
                                         key={idx}
+                                        className="group relative p-6 bg-white dark:bg-gem-slate-dark border border-gem-mist-light dark:border-gem-mist-dark rounded-3xl text-left hover:border-gem-blue transition-all hover:shadow-xl cursor-pointer"
                                         onClick={() => onEnterChat(lib.storeName, lib.name)}
-                                        className="group p-6 bg-white dark:bg-gem-slate-dark border border-gem-mist-light dark:border-gem-mist-dark rounded-3xl text-left hover:border-gem-blue transition-all hover:shadow-xl"
                                     >
                                         <div className="flex justify-between items-start">
                                             <div className="w-12 h-12 bg-gem-blue/5 rounded-xl flex items-center justify-center text-2xl mb-4">📖</div>
-                                            <span className="text-[10px] font-black bg-gem-blue/10 text-gem-blue px-2 py-1 rounded">ACTIVE</span>
+                                            <div className="flex items-center gap-2">
+                                                {user.role === 'admin' && onDeleteModule && (
+                                                    <button 
+                                                        onClick={(e) => {
+                                                            e.stopPropagation();
+                                                            if (window.confirm(`Are you sure you want to delete "${lib.name}"? This will free up storage but the files will be permanently removed.`)) {
+                                                                onDeleteModule(lib.storeName);
+                                                            }
+                                                        }}
+                                                        className="p-2 text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-xl transition-colors"
+                                                        title="Delete Module"
+                                                    >
+                                                        <TrashIcon />
+                                                    </button>
+                                                )}
+                                                <span className="text-[10px] font-black bg-gem-blue/10 text-gem-blue px-2 py-1 rounded">ACTIVE</span>
+                                            </div>
                                         </div>
                                         <h3 className="font-bold text-lg leading-tight mb-2 truncate">{lib.name}</h3>
+                                        <p className="text-[10px] opacity-40 mb-3 truncate">{lib.books.length} files attached</p>
                                         <div className="text-xs font-bold text-gem-blue">Start Session →</div>
-                                    </button>
+                                    </div>
                                 ))
                             )}
                         </div>
@@ -108,6 +126,7 @@ const WelcomeScreen: React.FC<WelcomeScreenProps> = ({
                                     <label htmlFor="file-up" className="cursor-pointer flex flex-col items-center">
                                         <UploadCloudIcon />
                                         <span className="mt-4 font-bold">Upload Course PDFs</span>
+                                        <p className="text-[10px] mt-2 opacity-50">Storage is limited to 1GB across all modules.</p>
                                     </label>
                                 </div>
 

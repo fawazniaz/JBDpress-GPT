@@ -65,36 +65,26 @@ const App: React.FC = () => {
     }, []);
 
     const fetchLibrary = useCallback(async (force: boolean = false) => {
-        // Prevent double loading unless forced
         if (isLibraryLoading && !force) return;
-        
         setIsLibraryLoading(true);
         setApiKeyError(null);
         
         try {
-            // listAllModules now returns immediately from cache while syncing in bg
             const modules = await geminiService.listAllModules();
-            
             const uniqueModulesMap = new Map();
             modules.forEach(m => {
                 if (m.storeName && !uniqueModulesMap.has(m.storeName)) {
                     uniqueModulesMap.set(m.storeName, m);
                 }
             });
-            
             const uniqueList = Array.from(uniqueModulesMap.values());
             setGlobalTextbooks(uniqueList);
-            
-            // If we have something, even cache, stop the spinner early for UX
-            if (uniqueList.length > 0) {
-                setIsLibraryLoading(false);
-            }
+            if (uniqueList.length > 0) setIsLibraryLoading(false);
         } catch (err: any) {
             console.error("Library Sync Failure:", err);
-            setApiKeyError(`Sync status: Using local repository.`);
+            setApiKeyError(`Sync status: Local library active.`);
         } finally {
-            // Always stop loading eventually
-            setTimeout(() => setIsLibraryLoading(false), 2000);
+            setTimeout(() => setIsLibraryLoading(false), 1500);
         }
     }, [isLibraryLoading]);
 
@@ -102,7 +92,7 @@ const App: React.FC = () => {
         if (status === AppStatus.Welcome && isApiKeySelected) {
             fetchLibrary();
         }
-    }, [status, isApiKeySelected]); // Removed fetchLibrary from deps to prevent loops
+    }, [status, isApiKeySelected]);
 
     const toggleDarkMode = () => {
         setIsDarkMode(prev => {
@@ -130,7 +120,14 @@ const App: React.FC = () => {
 
     const handleError = (err: any, customTitle?: string) => {
         console.error("Application Error:", err);
-        const errMsg = err.message || "An unexpected error occurred.";
+        let errMsg = err.message || "An unexpected error occurred.";
+        
+        // Specifically handle storage limit error
+        if (errMsg.includes("RESOURCE_EXHAUSTED") || errMsg.includes("429") || errMsg.includes("storage limit")) {
+            customTitle = "Storage Limit Reached";
+            errMsg = "You have used your 1GB free storage limit for textbooks. \n\nTo upload new files, please delete some older course modules from your library or upgrade your Google Cloud quota tier.";
+        }
+
         setError(customTitle || "Operation Blocked");
         setTechnicalDetails(errMsg);
         setStatus(AppStatus.Error);
@@ -160,13 +157,24 @@ const App: React.FC = () => {
             }
             
             setFiles([]);
-            // Refresh to confirm cloud state
             await fetchLibrary(true);
             setStatus(AppStatus.Welcome);
         } catch (err: any) {
             handleError(err, "Upload Failed");
         } finally {
             setUploadProgress(null);
+        }
+    };
+
+    const handleDeleteModule = async (storeName: string) => {
+        setIsLibraryLoading(true);
+        try {
+            await geminiService.deleteRagStore(storeName);
+            await fetchLibrary(true);
+        } catch (err: any) {
+            handleError(err, "Delete Failed");
+        } finally {
+            setIsLibraryLoading(false);
         }
     };
 
@@ -181,6 +189,7 @@ const App: React.FC = () => {
                     <WelcomeScreen 
                         user={user!}
                         onUpload={handleUploadTextbooks}
+                        onDeleteModule={handleDeleteModule}
                         onEnterChat={(store, name) => {
                             const mod = globalTextbooks.find(t => t.storeName === store);
                             if (mod) {
@@ -244,7 +253,7 @@ const App: React.FC = () => {
                         <div className="text-7xl mb-6">⚠️</div>
                         <h1 className="text-3xl font-black mb-4 text-red-500">{error}</h1>
                         <div className="max-w-xl p-8 bg-white dark:bg-gem-slate-dark rounded-[30px] shadow-2xl mb-8">
-                            <p className="font-bold text-gem-blue mb-4">Internal Log:</p>
+                            <p className="font-bold text-gem-blue mb-4">Notification:</p>
                             <p className="text-sm opacity-70 mb-6 leading-relaxed whitespace-pre-wrap">{technicalDetails}</p>
                             <button 
                                 onClick={() => { setStatus(AppStatus.Welcome); setError(null); }} 

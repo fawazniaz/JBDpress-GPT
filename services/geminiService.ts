@@ -64,7 +64,6 @@ export async function listAllModules(): Promise<TextbookModule[]> {
     try {
         const ai = new GoogleGenAI({ apiKey: process.env.API_KEY }) as any;
         
-        // If fileSearchStores isn't available, we strictly use local data
         if (!ai.fileSearchStores) return localData;
 
         // Fetch cloud list with a reasonable timeout
@@ -78,7 +77,6 @@ export async function listAllModules(): Promise<TextbookModule[]> {
         // Update local registry with cloud data (Additive only)
         for (const s of cloudStores) {
             try {
-                // Fetch files for this store to verify content
                 const filesRes: any = await ai.fileSearchStores.listFilesSearchStoreFiles({ 
                     fileSearchStoreName: s.name 
                 }).catch(() => ({ fileSearchStoreFiles: [] }));
@@ -92,7 +90,6 @@ export async function listAllModules(): Promise<TextbookModule[]> {
                     books: Array.from(new Set(bookNames))
                 });
             } catch (e) {
-                // If cloud detail fetch fails, preserve the local version
                 if (!registryMap.has(s.name)) {
                     registryMap.set(s.name, {
                         name: s.displayName || 'Untitled Module',
@@ -115,7 +112,6 @@ export async function listAllModules(): Promise<TextbookModule[]> {
 export async function createRagStore(displayName: string): Promise<string> {
     const ai = new GoogleGenAI({ apiKey: process.env.API_KEY }) as any;
     
-    // 1. Prepare local placeholder
     const tempStoreName = `pending_${Date.now()}`;
     const local = getLocalRepository();
     local.push({ name: displayName, storeName: tempStoreName, books: ['Provisioning...'] });
@@ -125,7 +121,6 @@ export async function createRagStore(displayName: string): Promise<string> {
         const ragStore: any = await ai.fileSearchStores.create({ config: { displayName } });
         const realName = ragStore.name || "";
         
-        // 2. Update local with real name
         const updated = getLocalRepository().map(m => 
             m.storeName === tempStoreName ? { ...m, storeName: realName } : m
         );
@@ -133,7 +128,6 @@ export async function createRagStore(displayName: string): Promise<string> {
         
         return realName;
     } catch (err) {
-        // Rollback on fail
         const rolledBack = getLocalRepository().filter(m => m.storeName !== tempStoreName);
         localStorage.setItem(STABLE_REGISTRY_KEY, JSON.stringify(rolledBack));
         throw err;
@@ -143,7 +137,6 @@ export async function createRagStore(displayName: string): Promise<string> {
 export async function uploadToRagStore(ragStoreName: string, file: File): Promise<void> {
     const ai = new GoogleGenAI({ apiKey: process.env.API_KEY }) as any;
     
-    // Add file to local list immediately (Optimistic UI)
     const local = getLocalRepository();
     const idx = local.findIndex(m => m.storeName === ragStoreName);
     if (idx !== -1) {
@@ -160,7 +153,6 @@ export async function uploadToRagStore(ragStoreName: string, file: File): Promis
 
     if (!op || !op.name) throw new Error("Cloud upload rejected.");
     
-    // Poll for completion
     let attempts = 0;
     while (attempts < 25) {
         await delay(3000);
@@ -171,6 +163,24 @@ export async function uploadToRagStore(ragStoreName: string, file: File): Promis
         }
         attempts++;
     }
+}
+
+export async function deleteRagStore(storeName: string): Promise<void> {
+    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY }) as any;
+    
+    try {
+        // Delete from cloud
+        if (ai.fileSearchStores) {
+            await ai.fileSearchStores.delete({ fileSearchStoreName: storeName });
+        }
+    } catch (e) {
+        console.warn("Could not delete from cloud (it may already be gone), cleaning up local registry.", e);
+    }
+    
+    // Cleanup local registry
+    const local = getLocalRepository();
+    const filtered = local.filter(m => m.storeName !== storeName);
+    localStorage.setItem(STABLE_REGISTRY_KEY, JSON.stringify(filtered));
 }
 
 const BASE_GROUNDING_INSTRUCTION = `You are JBDPRESS_GPT, a strict RAG-based Textbook Tutor. 
@@ -216,7 +226,7 @@ export async function generateExampleQuestions(ragStoreName: string): Promise<st
         const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
         const response = await ai.models.generateContent({
             model: 'gemini-3-flash-preview',
-            contents: 'Suggest 3 study questions based on these materials.',
+            contents: 'Suggest 3 study questions.',
             config: {
                 tools: [{ fileSearch: { fileSearchStoreNames: [ragStoreName] } } as any],
                 responseMimeType: 'application/json',
