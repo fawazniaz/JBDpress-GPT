@@ -28,21 +28,23 @@ async function withTimeout<T>(promise: Promise<T>, ms: number, errorMessage: str
 /**
  * Robust retry wrapper for transient API errors (503, 500)
  */
-async function withRetry<T>(fn: () => Promise<T>, maxRetries = 3): Promise<T> {
+async function withRetry<T>(fn: (retryCount: number) => Promise<T>, maxRetries = 4): Promise<T> {
     let lastError: any;
     for (let i = 0; i < maxRetries; i++) {
         try {
-            return await fn();
+            return await fn(i);
         } catch (err: any) {
             lastError = err;
             const isTransient = err.message?.includes("503") || 
                                err.message?.includes("500") || 
                                err.message?.includes("overloaded") ||
-                               err.message?.includes("UNAVAILABLE");
+                               err.message?.includes("UNAVAILABLE") ||
+                               err.message?.includes("deadline");
             
             if (isTransient && i < maxRetries - 1) {
-                const backoff = Math.pow(2, i) * 2000; // 2s, 4s, 8s...
-                console.warn(`Model overloaded. Retry ${i+1}/${maxRetries} in ${backoff}ms...`);
+                // Exponential backoff: 3s, 6s, 12s...
+                const backoff = Math.pow(2, i) * 3000; 
+                console.warn(`Transient Error. Retry ${i+1}/${maxRetries} in ${backoff}ms...`, err);
                 await delay(backoff);
                 continue;
             }
@@ -56,12 +58,11 @@ function handleApiError(err: any, context: string): Error {
     console.error(`Gemini API Error [${context}]:`, err);
     let message = err.message || "Unknown AI error";
 
-    // Handle 503 specifically
+    // Detailed 503 handling
     if (message.includes("503") || message.includes("overloaded") || message.includes("UNAVAILABLE")) {
-        return new Error("SERVER_OVERLOADED: The AI is currently handling too many requests globally. We've tried retrying, but the cloud is still busy. Please wait 10-20 seconds and try your question again.");
+        return new Error("SERVER_OVERLOADED: The AI service is under extreme heavy load globally. We attempted 4 retries with different models, but the server is still rejecting connections. Please try again in 30-60 seconds.");
     }
 
-    // Handle Quota
     if (message.includes("429") || message.includes("RESOURCE_EXHAUSTED") || message.includes("quota")) {
         return new Error("QUOTA_EXCEEDED: Your API key limit has been reached. Please wait 1 minute for the window to reset.");
     }
@@ -235,7 +236,8 @@ CRITICAL RULE: Answer ONLY using the uploaded textbooks. Do not use outside know
 If information is missing, say: "I apologize, but this is not in the textbooks."`;
 
 /**
- * Performs search using Flash model with automatic retries for transient server overloads.
+ * Performs search using the most stable Flash models.
+ * Implements a multi-model fallback strategy: Flash -> Flash Lite -> Flash Lite again.
  */
 export async function fileSearch(
     ragStoreName: string, 
@@ -244,9 +246,13 @@ export async function fileSearch(
     useFastMode: boolean = false,
     bookFocus?: string
 ): Promise<QueryResult> {
-    return withRetry(async () => {
+    return withRetry(async (retryCount) => {
         const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-        const model = 'gemini-3-flash-preview'; 
+        
+        // MODEL STRATEGY:
+        // Attempt 1: gemini-flash-latest (Stable Production)
+        // Attempt 2+: gemini-flash-lite-latest (Highest availability)
+        const model = retryCount === 0 ? 'gemini-flash-latest' : 'gemini-flash-lite-latest';
         
         let instruction = BASE_GROUNDING_INSTRUCTION;
         if (bookFocus) { instruction += `\n\nFOCUS: Only search in: "${bookFocus}".`; }
@@ -274,7 +280,7 @@ export async function fileSearch(
                 groundingChunks: response.candidates?.[0]?.groundingMetadata?.groundingChunks || [],
             };
         } catch (err: any) {
-            throw handleApiError(err, "fileSearch");
+            throw handleApiError(err, `fileSearch (${model})`);
         }
     });
 }
@@ -284,7 +290,7 @@ export async function generateExampleQuestions(ragStoreName: string): Promise<st
         try {
             const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
             const response = await ai.models.generateContent({
-                model: 'gemini-3-flash-preview',
+                model: 'gemini-flash-latest',
                 contents: 'List 3 study questions based on these textbooks.',
                 config: {
                     tools: [{ fileSearch: { fileSearchStoreNames: [ragStoreName] } } as any],

@@ -93,7 +93,7 @@ const App: React.FC = () => {
                 setIsApiKeySelected(false);
                 setApiKeyError("Session Expired. Please Re-Authorize.");
             } else if (msg.includes("OVERLOADED")) {
-                setApiKeyError("Cloud Overloaded. Retrying...");
+                setApiKeyError("Cloud Busy. Auto-retrying...");
             } else {
                 setApiKeyError(`Sync: ${msg}`);
             }
@@ -131,8 +131,8 @@ const App: React.FC = () => {
         const errMsg = err.message || "An unexpected error occurred.";
         
         if (errMsg.includes("SERVER_OVERLOADED")) {
-            setError("Cloud Overloaded");
-            setTechnicalDetails("The AI service is temporarily busy due to high global traffic. We've tried retrying automatically, but the server is still unavailable. Please wait 10 seconds and simply 'Try Again'.");
+            setError("Cloud is Busy");
+            setTechnicalDetails("The global AI server is saturated. We've switched models and tried 4 automatic retries, but it's still busy. Don't worry, your data is safe. Please wait 30 seconds and click 'Force Auto-Retry'.");
         } else if (errMsg.includes("QUOTA_EXCEEDED") || errMsg.includes("429")) {
             setError("Model Limit Reached");
             setTechnicalDetails("Your project is hitting a quota limit. We are using the high-availability 'Flash' model, but the account needs a moment to reset. Please wait 1 minute.");
@@ -143,7 +143,7 @@ const App: React.FC = () => {
             setError("Indexing in Progress");
             setTechnicalDetails("Upload complete! The cloud is now reading your textbook. It will appear automatically in about 5 minutes.");
         } else {
-            setError(customTitle || "Query Failed");
+            setError(customTitle || "Operation Blocked");
             setTechnicalDetails(errMsg);
         }
 
@@ -245,7 +245,7 @@ const App: React.FC = () => {
                             const res = await geminiService.fileSearch(activeRagStoreName!, msg, m, f, b);
                             setChatHistory(prev => [...prev, { role: 'model', parts: [{ text: res.text }] }]);
                         } catch (e: any) { 
-                            handleError(e, "Query Throttled");
+                            handleError(e, "Query Interrupted");
                         } finally { 
                             setIsQueryLoading(false); 
                         }
@@ -255,11 +255,11 @@ const App: React.FC = () => {
                     exampleQuestions={exampleQuestions}
                 />;
             case AppStatus.Error:
-                 const isTransient = error?.includes("Overloaded") || error?.includes("Query");
+                 const isBusy = error?.includes("Busy") || error?.includes("Failed");
                  return (
                     <div className="flex flex-col h-screen items-center justify-center p-8 text-center bg-gem-onyx-light dark:bg-gem-onyx-dark transition-colors">
                         <div className="text-7xl mb-6">
-                            {error === "Indexing in Progress" ? '⏳' : (isTransient ? '☁️' : '⚠️')}
+                            {error === "Indexing in Progress" ? '⏳' : (isBusy ? '☁️' : '⚠️')}
                         </div>
                         <h1 className={`text-3xl font-black mb-4 ${error === "Indexing in Progress" ? 'text-gem-blue' : 'text-red-500'}`}>{error}</h1>
                         <div className="max-w-xl p-8 bg-white dark:bg-gem-slate-dark rounded-[30px] shadow-2xl mb-8">
@@ -268,7 +268,7 @@ const App: React.FC = () => {
                             <div className="flex flex-col sm:flex-row gap-4 justify-center">
                                 <button 
                                     onClick={() => {
-                                        if (isTransient && activeRagStoreName) {
+                                        if (isBusy && activeRagStoreName) {
                                             setStatus(AppStatus.Chatting);
                                             setError(null);
                                         } else {
@@ -279,7 +279,7 @@ const App: React.FC = () => {
                                     }} 
                                     className="bg-gem-blue text-white px-10 py-3 rounded-xl font-black shadow-lg hover:scale-105 active:scale-95 transition-all"
                                 >
-                                    {isTransient ? 'Try Query Again' : 'Deep Scan & Reset'}
+                                    {isBusy ? 'Force Auto-Retry' : 'Deep Scan & Reset'}
                                 </button>
                                 <button 
                                     onClick={() => { setStatus(AppStatus.Welcome); setError(null); }} 
