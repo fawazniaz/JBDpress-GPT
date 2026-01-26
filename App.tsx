@@ -75,7 +75,7 @@ const App: React.FC = () => {
             // UI-side deduplication safeguard
             const uniqueModulesMap = new Map();
             modules.forEach(m => {
-                if (!uniqueModulesMap.has(m.storeName)) {
+                if (m.storeName && !uniqueModulesMap.has(m.storeName)) {
                     uniqueModulesMap.set(m.storeName, m);
                 }
             });
@@ -89,7 +89,7 @@ const App: React.FC = () => {
             }
         } catch (err: any) {
             console.error("Library Sync Error:", err);
-            setApiKeyError(`Sync: ${err.message || "Unknown error"}`);
+            setApiKeyError(`Sync: ${err.message || "Intermittent Connection"}`);
         } finally {
             setIsLibraryLoading(false);
         }
