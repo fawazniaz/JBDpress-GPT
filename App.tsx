@@ -1,3 +1,4 @@
+
 /**
  * @license
  * SPDX-License-Identifier: Apache-2.0
@@ -121,7 +122,7 @@ const App: React.FC = () => {
         const errMsg = err.message || "An unexpected error occurred.";
         
         if (errMsg.includes("NETWORK_ERROR")) {
-            setTechnicalDetails("Tip: If the book is over 30MB, split it into smaller parts. Wi-Fi drops cause upload failures.");
+            setTechnicalDetails("Tip: If the book is over 30MB, split it into smaller parts. Large uploads are sensitive to internet micro-drops.");
         } else if (errMsg.includes("INDEXING_TIMEOUT")) {
             setTechnicalDetails("Success! The upload finished, but the cloud is taking a bit longer to read the book. It will appear in your library automatically in about 5 minutes.");
             setError("Indexing in Progress");
@@ -151,19 +152,29 @@ const App: React.FC = () => {
         
         try {
             const moduleLabel = prompt("Library Folder Name:") || `Module ${globalTextbooks.length + 1}`;
-            setUploadProgress({ current: 0, total: files.length, message: "Handshake with Cloud...", fileName: "Starting..." });
+            setUploadProgress({ current: 0, total: files.length, message: "Handshaking with Cloud...", fileName: "Starting..." });
             
             const ragStoreName = await geminiService.createRagStore(moduleLabel);
             
             for (let i = 0; i < files.length; i++) {
                 const mb = (files[i].size / (1024 * 1024)).toFixed(1);
+                // Step-by-step progress
                 setUploadProgress({ 
                     current: i + 1, 
                     total: files.length, 
-                    message: `Cloud Indexing (${mb} MB)...`, 
+                    message: `Sending Data (${mb} MB)...`, 
                     fileName: files[i].name 
                 });
+                
+                // This wait is where the bulk of the time usually is (Indexing)
                 await geminiService.uploadToRagStore(ragStoreName, files[i]);
+                
+                setUploadProgress({ 
+                    current: i + 1, 
+                    total: files.length, 
+                    message: `Cloud Indexing Complete!`, 
+                    fileName: files[i].name 
+                });
             }
             
             await fetchLibrary();

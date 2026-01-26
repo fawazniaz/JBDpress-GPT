@@ -43,11 +43,10 @@ function handleApiError(err: any, context: string): Error {
 }
 
 /**
- * Fetches all existing RAG stores from the cloud.
+ * Fetches all existing RAG stores from the cloud in parallel.
  */
 export async function listAllModules(): Promise<TextbookModule[]> {
     try {
-        // ALWAYS use a fresh instance to ensure the latest API key from process.env is used.
         const ai = new GoogleGenAI({ apiKey: process.env.API_KEY }) as any;
         
         if (!ai.fileSearchStores) {
@@ -61,8 +60,6 @@ export async function listAllModules(): Promise<TextbookModule[]> {
             "Cloud sync timed out while fetching stores."
         )) as any;
 
-        const modules: TextbookModule[] = [];
-        
         // Robust detection: check all possible names for the stores list
         let stores: any[] = [];
         if (Array.isArray(storesResponse)) {
@@ -77,7 +74,8 @@ export async function listAllModules(): Promise<TextbookModule[]> {
         
         if (stores.length === 0) return [];
 
-        for (const store of stores) {
+        // Fetch all module file lists in parallel for much faster library sync
+        const modulePromises = stores.map(async (store) => {
             try {
                 const filesResponse = (await ai.fileSearchStores.listFilesSearchStoreFiles({
                     fileSearchStoreName: store.name!
@@ -92,21 +90,22 @@ export async function listAllModules(): Promise<TextbookModule[]> {
                     files = filesResponse.files;
                 }
 
-                modules.push({
+                return {
                     name: store.displayName || 'Untitled Module',
                     storeName: store.name!,
                     books: files.map((f: any) => f.displayName || 'Unnamed File')
-                });
+                };
             } catch (e) {
                 console.warn(`Could not list files for store ${store.name}:`, e);
-                modules.push({
+                return {
                     name: store.displayName || 'Untitled Module',
                     storeName: store.name!,
                     books: []
-                });
+                };
             }
-        }
-        return modules;
+        });
+
+        return await Promise.all(modulePromises);
     } catch (err: any) {
         throw handleApiError(err, "listAllModules");
     }
@@ -134,6 +133,7 @@ export async function uploadToRagStore(ragStoreName: string, file: File): Promis
     let op: any;
 
     try {
+        // Step 1: Physical Upload
         op = await ai.fileSearchStores.uploadToFileSearchStore({
             fileSearchStoreName: ragStoreName,
             file: file
@@ -144,11 +144,15 @@ export async function uploadToRagStore(ragStoreName: string, file: File): Promis
 
     if (!op || !op.name) throw new Error("UPLOAD_FAILED: Cloud did not return an operation ID.");
     
+    // Step 2: Poll for Indexing completion
     let retries = 0;
     const maxRetries = 180; // 15 minutes max
     
     while (retries < maxRetries) {
-        await delay(5000); 
+        // Start with a shorter delay for small files, increasing slightly
+        const waitTime = retries < 5 ? 3000 : 5000;
+        await delay(waitTime); 
+        
         try {
             const currentOp = await ai.operations.get({ name: op.name });
             if (currentOp) {
@@ -164,10 +168,12 @@ export async function uploadToRagStore(ragStoreName: string, file: File): Promis
         } catch (pollErr: any) {
             console.warn("Polling operation status failed, retrying...", pollErr);
             retries++;
+            // If we get consecutive failures, the key might have expired or connection lost
+            if (retries > 10 && pollErr.message.includes("403")) throw pollErr;
         }
     }
     
-    throw new Error("INDEXING_TIMEOUT: The file is uploaded but indexing is taking too long. It will appear shortly.");
+    throw new Error("INDEXING_TIMEOUT: The file is uploaded but indexing is taking too long. It will appear in your library shortly.");
 }
 
 const BASE_GROUNDING_INSTRUCTION = `You are JBDPRESS_GPT, a strict RAG-based Textbook Tutor. 
