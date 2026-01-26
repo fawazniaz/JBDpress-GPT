@@ -29,6 +29,11 @@ function handleApiError(err: any, context: string): Error {
     console.error(`Gemini API Error [${context}]:`, err);
     let message = err.message || "Unknown AI error";
 
+    // Detect Quota/Rate Limit Errors (The error you saw)
+    if (message.includes("429") || message.includes("RESOURCE_EXHAUSTED") || message.includes("quota")) {
+        return new Error("QUOTA_EXCEEDED: Your API key has reached its limit or doesn't have access to this specific model. Try switching to a Paid Key or wait a few minutes.");
+    }
+
     if (message.includes("Requested entity was not found.")) {
         return new Error("RESELECTION_REQUIRED: The selected API key was not found or is invalid for this project.");
     }
@@ -92,7 +97,7 @@ export async function listAllModules(): Promise<TextbookModule[]> {
             });
         }
 
-        // Add local registry items if not already present (instant fix for "Empty Library" lag)
+        // Add local registry items if not already present
         for (const local of localRegistry) {
             if (!mergedMap.has(local.storeName)) {
                 mergedMap.set(local.storeName, {
@@ -106,7 +111,7 @@ export async function listAllModules(): Promise<TextbookModule[]> {
         const rawResults = Array.from(mergedMap.values());
         if (rawResults.length === 0) return [];
 
-        // Enrich with file lists (only for established stores)
+        // Enrich with file lists
         const enrichedPromises = rawResults.map(async (mod) => {
             try {
                 const filesResponse = (await ai.fileSearchStores.listFilesSearchStoreFiles({
@@ -123,7 +128,7 @@ export async function listAllModules(): Promise<TextbookModule[]> {
                     books: files.length > 0 ? files.map((f: any) => f.displayName || 'Unnamed File') : mod.books
                 };
             } catch (e) {
-                return mod; // Keep placeholder if listing fails
+                return mod; 
             }
         });
 
@@ -142,7 +147,6 @@ export async function createRagStore(displayName: string): Promise<string> {
         const ragStore = await ai.fileSearchStores.create({ config: { displayName } });
         const storeName = ragStore.name || "";
         
-        // Save to local registry IMMEDIATELY
         const registry = JSON.parse(localStorage.getItem(LOCAL_REGISTRY_KEY) || '[]');
         registry.push({ name: displayName, storeName: storeName, books: ['Connecting to cloud...'] });
         localStorage.setItem(LOCAL_REGISTRY_KEY, JSON.stringify(registry));
@@ -171,9 +175,8 @@ export async function uploadToRagStore(ragStoreName: string, file: File): Promis
 
     if (!op || !op.name) throw new Error("UPLOAD_FAILED: Cloud did not return an operation ID.");
     
-    // Poll for Indexing completion
     let retries = 0;
-    const maxRetries = 40; // ~3 minutes - shorter timeout for better UX
+    const maxRetries = 40; 
     
     while (retries < maxRetries) {
         await delay(5000); 
@@ -185,7 +188,6 @@ export async function uploadToRagStore(ragStoreName: string, file: File): Promis
                 if (op.done) {
                     if (op.error) throw new Error(`Indexing Error: ${op.error.message}`);
                     
-                    // Update local registry with the new book name
                     const registry = JSON.parse(localStorage.getItem(LOCAL_REGISTRY_KEY) || '[]');
                     const idx = registry.findIndex((r: any) => r.storeName === ragStoreName);
                     if (idx !== -1) {
@@ -221,7 +223,10 @@ export async function fileSearch(
     bookFocus?: string
 ): Promise<QueryResult> {
     const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-    const model = 'gemini-3-pro-preview';
+    
+    // CHANGED: Use gemini-3-flash-preview instead of pro to bypass 429 quota limits on free keys
+    const model = 'gemini-3-flash-preview'; 
+    
     let instruction = BASE_GROUNDING_INSTRUCTION;
     if (bookFocus) { instruction += `\n\nFOCUS: Only search in: "${bookFocus}".`; }
     

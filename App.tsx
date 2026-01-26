@@ -80,7 +80,6 @@ const App: React.FC = () => {
         try {
             const modules = await geminiService.listAllModules();
             setGlobalTextbooks(modules);
-            // If we find textbooks, we're good to exit any error state
             if (modules.length > 0) {
                 setError(null);
                 if (status === AppStatus.Error) setStatus(AppStatus.Welcome);
@@ -126,23 +125,25 @@ const App: React.FC = () => {
         console.error("Application Error:", err);
         const errMsg = err.message || "An unexpected error occurred.";
         
-        if (errMsg.includes("NETWORK_ERROR")) {
-            setTechnicalDetails("Tip: If the book is over 30MB, split it into smaller parts. Large uploads are sensitive to internet micro-drops.");
+        if (errMsg.includes("QUOTA_EXCEEDED") || errMsg.includes("429")) {
+            setError("AI Quota Reached");
+            setTechnicalDetails("Your API key has run out of 'Free Tier' requests for today, or this project is restricted. Please wait a few minutes, or switch to a 'Paid' API key in the settings.");
+        } else if (errMsg.includes("NETWORK_ERROR")) {
+            setError("Network Interrupted");
+            setTechnicalDetails("The connection was lost. Large files (30MB+) are sensitive to network drops. Try splitting the book or using a more stable connection.");
         } else if (errMsg.includes("INDEXING_TIMEOUT")) {
-            setTechnicalDetails("Success! The upload finished, but the cloud is taking a bit longer to read the book. It will appear in your library automatically in about 5 minutes.");
             setError("Indexing in Progress");
-            setStatus(AppStatus.Error);
-            return;
+            setTechnicalDetails("The upload finished, but the cloud is taking a bit longer to read the content. It will appear in your library automatically in about 5 minutes.");
         } else if (errMsg.includes("RESELECTION_REQUIRED")) {
             setIsApiKeySelected(false);
             setApiKeyError("API selection reset required.");
             setStatus(AppStatus.Welcome);
             return;
         } else {
+            setError(customTitle || "Operation Error");
             setTechnicalDetails(errMsg);
         }
 
-        setError(customTitle || "Operation Error");
         setStatus(AppStatus.Error);
     };
 
@@ -170,7 +171,6 @@ const App: React.FC = () => {
                     fileName: files[i].name 
                 });
                 
-                // Indexing phase
                 setUploadProgress({ 
                     current: i + 1, 
                     total: files.length, 
@@ -181,7 +181,6 @@ const App: React.FC = () => {
                 await geminiService.uploadToRagStore(ragStoreName, files[i]);
             }
             
-            // Hard sync after all uploads
             await fetchLibrary(true);
             setFiles([]);
             setStatus(AppStatus.Welcome);
@@ -263,16 +262,18 @@ const App: React.FC = () => {
             case AppStatus.Error:
                  return (
                     <div className="flex flex-col h-screen items-center justify-center p-8 text-center bg-gem-onyx-light dark:bg-gem-onyx-dark transition-colors">
-                        <div className="text-7xl mb-6">{error === "Indexing in Progress" ? '⏳' : '⚠️'}</div>
+                        <div className="text-7xl mb-6">
+                            {error === "Indexing in Progress" ? '⏳' : (error === "AI Quota Reached" ? '🛑' : '⚠️')}
+                        </div>
                         <h1 className={`text-3xl font-black mb-4 ${error === "Indexing in Progress" ? 'text-gem-blue' : 'text-red-500'}`}>{error}</h1>
                         <div className="max-w-xl p-8 bg-white dark:bg-gem-slate-dark rounded-[30px] shadow-2xl mb-8">
                             <p className="font-bold text-gem-blue mb-4">Status Update:</p>
-                            <p className="text-sm opacity-70 mb-6 leading-relaxed">{technicalDetails}</p>
+                            <p className="text-sm opacity-70 mb-6 leading-relaxed whitespace-pre-wrap">{technicalDetails}</p>
                             <button 
                                 onClick={() => { setStatus(AppStatus.Welcome); setError(null); fetchLibrary(true); }} 
                                 className="bg-gem-blue text-white px-10 py-3 rounded-xl font-black shadow-lg hover:scale-105 active:scale-95 transition-all"
                             >
-                                {error === "Indexing in Progress" ? 'Back to Library' : 'Try Again'}
+                                {error === "Indexing in Progress" ? 'Back to Library' : 'Return to Home'}
                             </button>
                         </div>
                     </div>
