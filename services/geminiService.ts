@@ -42,7 +42,6 @@ async function withRetry<T>(fn: (retryCount: number) => Promise<T>, maxRetries =
                                err.message?.includes("deadline");
             
             if (isTransient && i < maxRetries - 1) {
-                // Exponential backoff: 3s, 6s, 12s...
                 const backoff = Math.pow(2, i) * 3000; 
                 console.warn(`Transient Error. Retry ${i+1}/${maxRetries} in ${backoff}ms...`, err);
                 await delay(backoff);
@@ -58,9 +57,8 @@ function handleApiError(err: any, context: string): Error {
     console.error(`Gemini API Error [${context}]:`, err);
     let message = err.message || "Unknown AI error";
 
-    // Detailed 503 handling
     if (message.includes("503") || message.includes("overloaded") || message.includes("UNAVAILABLE")) {
-        return new Error("SERVER_OVERLOADED: The AI service is under extreme heavy load globally. We attempted 4 retries with different models, but the server is still rejecting connections. Please try again in 30-60 seconds.");
+        return new Error("SERVER_OVERLOADED: The AI service is under extreme heavy load globally. We attempted several retries, but the server is still rejecting connections. Please wait 20 seconds and click 'Force Auto-Retry'.");
     }
 
     if (message.includes("429") || message.includes("RESOURCE_EXHAUSTED") || message.includes("quota")) {
@@ -236,8 +234,9 @@ CRITICAL RULE: Answer ONLY using the uploaded textbooks. Do not use outside know
 If information is missing, say: "I apologize, but this is not in the textbooks."`;
 
 /**
- * Performs search using the most stable Flash models.
- * Implements a multi-model fallback strategy: Flash -> Flash Lite -> Flash Lite again.
+ * Performs search using the most optimized Gemini 3 Flash models.
+ * Attempt 1: gemini-3-flash-preview (Latest Gemini 3)
+ * Attempt 2+: gemini-flash-lite-latest (Stable Fallback)
  */
 export async function fileSearch(
     ragStoreName: string, 
@@ -249,10 +248,8 @@ export async function fileSearch(
     return withRetry(async (retryCount) => {
         const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
         
-        // MODEL STRATEGY:
-        // Attempt 1: gemini-flash-latest (Stable Production)
-        // Attempt 2+: gemini-flash-lite-latest (Highest availability)
-        const model = retryCount === 0 ? 'gemini-flash-latest' : 'gemini-flash-lite-latest';
+        // Gemini 3 Flash is preferred for Basic Text/RAG tasks.
+        const model = retryCount === 0 ? 'gemini-3-flash-preview' : 'gemini-flash-lite-latest';
         
         let instruction = BASE_GROUNDING_INSTRUCTION;
         if (bookFocus) { instruction += `\n\nFOCUS: Only search in: "${bookFocus}".`; }
@@ -290,7 +287,7 @@ export async function generateExampleQuestions(ragStoreName: string): Promise<st
         try {
             const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
             const response = await ai.models.generateContent({
-                model: 'gemini-flash-latest',
+                model: 'gemini-3-flash-preview',
                 contents: 'List 3 study questions based on these textbooks.',
                 config: {
                     tools: [{ fileSearch: { fileSearchStoreNames: [ragStoreName] } } as any],
