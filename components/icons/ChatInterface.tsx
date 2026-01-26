@@ -1,3 +1,4 @@
+
 /**
  * @license
  * SPDX-License-Identifier: Apache-2.0
@@ -77,9 +78,11 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ user, documentName, books
 
         const closeContext = async (ctxRef: React.MutableRefObject<AudioContext | null>) => {
             const ctx = ctxRef.current;
+            // CRITICAL FIX: Check ctx.state before attempting to close
             if (ctx && ctx.state !== 'closed') {
                 try {
                     await ctx.close();
+                    console.log("AudioContext closed successfully.");
                 } catch (e) {
                     console.warn("AudioContext closure warning:", e);
                 }
