@@ -20,6 +20,13 @@ async function delay(ms: number): Promise<void> {
 }
 
 /**
+ * Helper to convert browser File to Uint8Array for stable SDK transmission
+ */
+async function fileToUint8Array(file: File): Promise<Uint8Array> {
+    return new Uint8Array(await file.arrayBuffer());
+}
+
+/**
  * Fetches all raw files in the project.
  */
 export async function listAllCloudFiles(): Promise<CloudFile[]> {
@@ -118,12 +125,21 @@ export async function createRagStore(displayName: string): Promise<string> {
 
 export async function uploadToRagStore(ragStoreName: string, file: File, onProgress?: (msg: string) => void): Promise<void> {
     const ai = new GoogleGenAI({ apiKey: process.env.API_KEY }) as any;
-    if (onProgress) onProgress(`Sending bytes for ${file.name}...`);
+    if (onProgress) onProgress(`Preparing bytes for ${file.name}...`);
     
     try {
+        // Convert File to bytes to avoid SDK hangs in the browser
+        const fileBytes = await fileToUint8Array(file);
+        
+        if (onProgress) onProgress(`Uploading ${file.name} to Cloud...`);
+
         const op: any = await ai.fileSearchStores.uploadToFileSearchStore({
             fileSearchStoreName: ragStoreName,
-            file: file
+            file: {
+                data: fileBytes,
+                mimeType: file.type || 'application/pdf',
+                displayName: file.name
+            }
         });
         
         if (!op || !op.name) throw new Error("Upload handshake failed.");
