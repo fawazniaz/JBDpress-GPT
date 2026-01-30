@@ -95,7 +95,7 @@ export async function listAllModules(): Promise<TextbookModule[]> {
             return results;
         }
         return localData;
-    } catch (err) {
+    } catch (err: any) {
         console.warn("Module list retrieval failure:", err);
         return localData;
     }
@@ -103,39 +103,54 @@ export async function listAllModules(): Promise<TextbookModule[]> {
 
 export async function createRagStore(displayName: string): Promise<string> {
     const ai = new GoogleGenAI({ apiKey: process.env.API_KEY }) as any;
-    const ragStore: any = await ai.fileSearchStores.create({ config: { displayName } });
-    if (!ragStore || !ragStore.name) throw new Error("Failed to create repository metadata.");
-    return ragStore.name;
+    try {
+        const ragStore: any = await ai.fileSearchStores.create({ config: { displayName } });
+        if (!ragStore || !ragStore.name) throw new Error("Cloud creation failed.");
+        return ragStore.name;
+    } catch (err: any) {
+        const msg = (err.message || "").toLowerCase();
+        if (msg.includes('403') || msg.includes('permission_denied') || msg.includes('unauthenticated')) {
+            throw new Error("Billing required: File Search Stores (RAG) require a paid API key from a project with billing enabled.");
+        }
+        throw err;
+    }
 }
 
-export async function uploadToRagStore(ragStoreName: string, file: File): Promise<void> {
-    // Re-instantiate right before call as per guidelines
+export async function uploadToRagStore(ragStoreName: string, file: File, onProgress?: (msg: string) => void): Promise<void> {
     const ai = new GoogleGenAI({ apiKey: process.env.API_KEY }) as any;
+    if (onProgress) onProgress(`Sending bytes for ${file.name}...`);
     
-    // Some browser environments fail if the File is passed directly; wrapping in Blob ensures stability
-    const blob = new Blob([file], { type: file.type });
-    
-    const op: any = await ai.fileSearchStores.uploadToFileSearchStore({
-        fileSearchStoreName: ragStoreName,
-        file: blob
-    });
-    
-    if (!op || !op.name) throw new Error("Cloud upload rejected. Check your API key billing status.");
+    try {
+        const op: any = await ai.fileSearchStores.uploadToFileSearchStore({
+            fileSearchStoreName: ragStoreName,
+            file: file
+        });
+        
+        if (!op || !op.name) throw new Error("Upload handshake failed.");
 
-    let attempts = 0;
-    while (attempts < 60) { // Max 3 minutes
-        await delay(3000);
-        const currentOp: any = await ai.operations.get({ name: op.name });
-        if (currentOp?.done) {
-            if (currentOp.error) {
-                console.error("LRO Error:", currentOp.error);
-                throw new Error(currentOp.error.message || "File processing failed in the cloud.");
+        let attempts = 0;
+        while (attempts < 100) {
+            if (onProgress) onProgress(`Cloud indexing ${file.name} (Attempt ${attempts+1}/100)...`);
+            await delay(3000);
+            
+            const currentOp: any = await ai.operations.get({ name: op.name });
+            if (currentOp?.done) {
+                if (currentOp.error) {
+                    throw new Error(currentOp.error.message || "File processing error.");
+                }
+                return;
             }
-            return;
+            attempts++;
         }
-        attempts++;
+        throw new Error("Cloud processing timed out. The file might appear after a refresh.");
+    } catch (err: any) {
+        console.error("Upload Error Details:", err);
+        const msg = (err.message || "").toLowerCase();
+        if (msg.includes('404')) {
+            throw new Error("Cloud repository link lost. Please refresh the library.");
+        }
+        throw err;
     }
-    throw new Error("Upload timed out. The file may still be processing in the background.");
 }
 
 export async function deleteRagStore(storeName: string): Promise<void> {
