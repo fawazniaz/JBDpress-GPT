@@ -10,23 +10,26 @@ const STABLE_REGISTRY_KEY = 'JBDPRESS_STABLE_REGISTRY_FINAL';
 
 /**
  * Standardizes the MIME type for RAG compatibility.
- * Some browsers fail to detect PDF types correctly, so we use extension as a fallback.
  */
 function getMimeType(file: File): string {
     const name = file.name || "";
     const ext = name.split('.').pop()?.toLowerCase();
     
-    // Hard check extensions first to prevent "application/octet-stream" issues
-    if (ext === 'pdf') return 'application/pdf';
-    if (ext === 'txt') return 'text/plain';
-    if (ext === 'md') return 'text/markdown';
-    if (ext === 'docx') return 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+    // Hard-coded mapping to ensure we don't send 'application/octet-stream'
+    const mimeMap: Record<string, string> = {
+        'pdf': 'application/pdf',
+        'txt': 'text/plain',
+        'md': 'text/markdown',
+        'docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+    };
+
+    if (ext && mimeMap[ext]) return mimeMap[ext];
 
     if (file.type && file.type.trim() !== '' && file.type !== 'application/octet-stream') {
         return file.type;
     }
     
-    return 'application/pdf'; // Default fallback for textbooks
+    return 'application/pdf'; 
 }
 
 /**
@@ -135,8 +138,8 @@ export async function createRagStore(displayName: string): Promise<string> {
 
 /**
  * Uploads a file to a RAG store.
- * We use the 'data' property directly on the file object and provide mimeType at the top level
- * to satisfy the SDK's validation requirements.
+ * The SDK error "Please provide mimeType in the config" implies the mimeType must be
+ * present inside a 'config' object passed to the upload method.
  */
 export async function uploadToRagStore(ragStoreName: string, file: File, onProgress?: (msg: string) => void): Promise<void> {
     const ai = getAIClient();
@@ -150,18 +153,22 @@ export async function uploadToRagStore(ragStoreName: string, file: File, onProgr
         if (onProgress) onProgress(`Uploading ${file.name}...`);
 
         /**
-         * For the uploadToFileSearchStore method in the @google/genai SDK:
-         * 1. The 'file' object needs 'data', 'mimeType', and 'displayName'.
-         * 2. The top-level request object often requires 'mimeType' to pass validation.
+         * To satisfy the "Please provide mimeType in the config" error:
+         * We wrap the upload parameters such that mimeType is both in the file object
+         * AND inside a top-level 'config' object.
          */
         const op: any = await ai.fileSearchStores.uploadToFileSearchStore({
             fileSearchStoreName: ragStoreName,
-            mimeType: mimeType, // Required by some SDK versions for validation
             file: {
                 data: data,
                 mimeType: mimeType,
                 displayName: file.name
-            }
+            },
+            config: {
+                mimeType: mimeType
+            },
+            // Redundant top-level property just in case
+            mimeType: mimeType 
         });
         
         if (!op || !op.name) throw new Error("Cloud rejected the upload request.");
@@ -184,6 +191,7 @@ export async function uploadToRagStore(ragStoreName: string, file: File, onProgr
         throw new Error("Indexing timed out. The file might still appear later.");
     } catch (err: any) {
         console.error("Upload process failed:", err);
+        // Throw the specific error message to help debug if it happens again
         throw new Error(err.message || "An unknown error occurred during cloud upload.");
     }
 }
