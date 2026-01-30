@@ -34,10 +34,10 @@ const WelcomeScreen: React.FC<WelcomeScreenProps> = ({
                 </div>
             )}
             {apiKeyError && !isLibraryLoading && (
-                <div className="bg-amber-500 text-white text-[11px] font-black py-2 px-6 text-center shadow-lg animate-bounce flex items-center justify-center gap-3">
+                <div className="bg-amber-500 text-white text-[11px] font-black py-2 px-6 text-center shadow-lg flex items-center justify-center gap-3">
                     <span className="text-lg">⚠️</span> 
-                    <span>CLOUD QUOTA ALERT: {apiKeyError}</span>
-                    <button onClick={onOpenDashboard} className="underline hover:no-underline">OPEN ADMIN DASHBOARD</button>
+                    <span className="uppercase">{apiKeyError}</span>
+                    <button onClick={onRefreshLibrary} className="underline hover:no-underline font-black ml-4">RETRY SYNC</button>
                 </div>
             )}
             
@@ -64,16 +64,22 @@ const WelcomeScreen: React.FC<WelcomeScreenProps> = ({
                         <div>
                             <h2 className="text-4xl font-black mb-4 flex items-center gap-3">
                                 Course Library
-                                <button onClick={onRefreshLibrary} className="p-2 hover:bg-gem-blue/5 rounded-full"><RefreshIcon /></button>
+                                <button onClick={onRefreshLibrary} disabled={isLibraryLoading} className={`p-2 hover:bg-gem-blue/5 rounded-full ${isLibraryLoading ? 'animate-spin opacity-50' : ''}`}><RefreshIcon /></button>
                             </h2>
                             <p className="opacity-60 text-sm">Access your digital textbooks. Cloud storage is shared across all modules.</p>
                         </div>
 
                         <div className="grid grid-cols-1 gap-4">
                             {textbooks.length === 0 && !isLibraryLoading ? (
-                                <div className="p-16 border-2 border-dashed border-gem-mist-light dark:border-gem-mist-dark rounded-[32px] text-center opacity-30">
+                                <div className="p-16 border-2 border-dashed border-gem-mist-light dark:border-gem-mist-dark rounded-[32px] text-center bg-white/50 dark:bg-black/10">
                                     <div className="text-4xl mb-4">📂</div>
-                                    <p className="font-bold">Repository Empty</p>
+                                    <p className="font-bold opacity-30 mb-6">Repository Empty</p>
+                                    <button 
+                                        onClick={onRefreshLibrary}
+                                        className="inline-flex items-center gap-2 px-6 py-3 bg-gem-blue/10 text-gem-blue rounded-2xl font-black text-xs hover:bg-gem-blue hover:text-white transition-all"
+                                    >
+                                        <RefreshIcon /> FORCE SYNC WITH CLOUD
+                                    </button>
                                 </div>
                             ) : (
                                 textbooks.map((lib, idx) => (
@@ -110,7 +116,7 @@ const WelcomeScreen: React.FC<WelcomeScreenProps> = ({
                             <div className="space-y-8">
                                 <div className="flex justify-between items-center">
                                     <h3 className="text-2xl font-black">Publish Module</h3>
-                                    {apiKeyError && <span className="text-[10px] font-bold text-amber-500">QUOTA AT RISK</span>}
+                                    {apiKeyError && <span className="text-[10px] font-bold text-amber-500">SYNC ERROR</span>}
                                 </div>
                                 {!isApiKeySelected && <button onClick={onSelectKey} className="w-full p-4 bg-gem-blue text-white font-bold rounded-2xl">Authorize Gemini Access</button>}
                                 

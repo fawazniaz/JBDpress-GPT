@@ -83,6 +83,7 @@ const App: React.FC = () => {
         if (loadingRef.current && !force) return;
         loadingRef.current = true;
         setIsLibraryLoading(true);
+        setSyncError(null);
         
         try {
             const results = await Promise.allSettled([
@@ -92,20 +93,15 @@ const App: React.FC = () => {
 
             if (results[0].status === 'fulfilled') {
                 setGlobalTextbooks(results[0].value);
+            } else {
+                setSyncError(results[0].reason?.message || "Cloud modules unavailable.");
             }
+
             if (results[1].status === 'fulfilled') {
                 setCloudFiles(results[1].value);
             }
-
-            const anyFailure = results.some(r => r.status === 'rejected');
-            if (anyFailure) {
-                setSyncError("Cloud connection throttled. File list might take a moment to update.");
-            } else {
-                setSyncError(null);
-            }
         } catch (err: any) {
-            console.warn("Sync logic failure:", err);
-            setSyncError("Cloud synchronization limited.");
+            setSyncError(err.message || "Cloud synchronization failed.");
         } finally {
             setIsLibraryLoading(false);
             loadingRef.current = false;
@@ -129,20 +125,13 @@ const App: React.FC = () => {
         console.error("Critical Error Detected:", err);
         const msg = (err.message || "").toLowerCase();
         
-        if (msg.includes("resource_exhausted") || msg.includes("429") || msg.includes("quota") || msg.includes("limit")) {
-            setSyncError("Rate limit reached. Please wait 1 minute before trying again.");
-            setIsLibraryLoading(false);
-            setIsQueryLoading(false);
-            return;
-        }
-
-        if (msg.includes("not found") || msg.includes("entity was not found")) {
-            setSyncError("Project link invalid. Please check your API key.");
+        if (msg.includes("403") || msg.includes("401")) {
+            setSyncError("Access Denied: Please check API key/billing.");
             return;
         }
 
         setError(customTitle || "System Error");
-        setTechnicalDetails(err.message || "Unknown error occurred. Check network and billing status.");
+        setTechnicalDetails(err.message || "Unknown error occurred.");
         setStatus(AppStatus.Error);
     };
 
@@ -155,8 +144,8 @@ const App: React.FC = () => {
         
         setStatus(AppStatus.Uploading);
         try {
-            const moduleLabel = prompt("Enter Module Name (e.g., Biology Grade 10):") || `Module ${new Date().toLocaleDateString()}`;
-            setUploadProgress({ current: 0, total: files.length, message: "Handshaking with Cloud Repository..." });
+            const moduleLabel = prompt("Enter Module Name (e.g., Science Grade 4):") || `Module ${new Date().toLocaleDateString()}`;
+            setUploadProgress({ current: 0, total: files.length, message: "Handshaking with Cloud..." });
             
             const ragStoreName = await geminiService.createRagStore(moduleLabel);
             
@@ -165,25 +154,18 @@ const App: React.FC = () => {
                 setUploadProgress({ 
                     current: i, 
                     total: files.length, 
-                    message: `Sending ${file.name}...`, 
+                    message: `Processing ${file.name}...`, 
                     fileName: file.name 
                 });
                 
                 await geminiService.uploadToRagStore(ragStoreName, file, (msg) => {
                     setUploadProgress(prev => prev ? { ...prev, message: msg } : null);
                 });
-
-                setUploadProgress({ 
-                    current: i + 1, 
-                    total: files.length, 
-                    message: `Successfully indexed ${file.name}.`, 
-                    fileName: file.name 
-                });
             }
             
             setFiles([]);
-            setUploadProgress({ current: 1, total: 1, message: "Finalizing cloud index... One moment.", fileName: "Syncing library..." });
-            await delay(5000); 
+            setUploadProgress({ current: files.length, total: files.length, message: "Syncing library index...", fileName: "Finalizing..." });
+            await delay(4000); 
             await fetchLibrary(true);
             setStatus(AppStatus.Welcome);
         } catch (err: any) { 
@@ -210,30 +192,6 @@ const App: React.FC = () => {
             await fetchLibrary(true);
         } catch (err: any) { handleError(err, "Cleanup Error"); }
         finally { setIsLibraryLoading(false); }
-    };
-
-    const handlePurgeAll = async () => {
-        if (!confirm("Wipe all cloud data? This cannot be undone.")) return;
-        setIsLibraryLoading(true);
-        setSyncError("Purging storage...");
-        try {
-            for (const store of globalTextbooks) {
-                try { await geminiService.deleteRagStore(store.storeName); } catch (e) {}
-                await delay(1000);
-            }
-            for (const file of cloudFiles) {
-                try { await geminiService.deleteRawFile(file.name); } catch (e) {}
-                await delay(1000);
-            }
-            localStorage.removeItem('JBDPRESS_STABLE_REGISTRY_FINAL');
-            setGlobalTextbooks([]);
-            setCloudFiles([]);
-            await fetchLibrary(true);
-        } catch (err: any) { 
-            handleError(err, "Purge Throttled");
-        } finally { 
-            setIsLibraryLoading(false); 
-        }
     };
 
     const renderContent = () => {
@@ -279,7 +237,7 @@ const App: React.FC = () => {
                     cloudFiles={cloudFiles}
                     onDeleteModule={handleDeleteModule} 
                     onDeleteRawFile={handleDeleteRawFile}
-                    onPurgeAll={handlePurgeAll}
+                    onPurgeAll={() => {}} // Placeholder
                     onClose={() => setStatus(AppStatus.Welcome)} 
                     onDeepSync={() => fetchLibrary(true)}
                     isSyncing={isLibraryLoading}

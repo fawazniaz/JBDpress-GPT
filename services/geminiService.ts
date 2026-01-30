@@ -19,12 +19,24 @@ async function delay(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-/**
- * Helper to convert browser File to Uint8Array for stable SDK transmission
- */
-async function fileToUint8Array(file: File): Promise<Uint8Array> {
-    return new Uint8Array(await file.arrayBuffer());
-}
+export const encodeBase64 = (b: Uint8Array) => {
+    let binary = '';
+    const len = b.byteLength;
+    for (let i = 0; i < len; i++) {
+        binary += String.fromCharCode(b[i]);
+    }
+    return btoa(binary);
+};
+
+export const decodeBase64 = (s: string) => {
+    const binaryString = atob(s);
+    const len = binaryString.length;
+    const bytes = new Uint8Array(len);
+    for (let i = 0; i < len; i++) {
+        bytes[i] = binaryString.charCodeAt(i);
+    }
+    return bytes;
+};
 
 /**
  * Fetches all raw files in the project.
@@ -65,6 +77,11 @@ export async function deleteRawFile(fileName: string): Promise<void> {
 export async function listAllModules(): Promise<TextbookModule[]> {
     const localData = getLocalRepository();
     const ai = new GoogleGenAI({ apiKey: process.env.API_KEY }) as any;
+    
+    if (!process.env.API_KEY) {
+        throw new Error("API Key is missing. Please authorize Gemini access.");
+    }
+
     if (!ai.fileSearchStores) return localData;
 
     let allStores: any[] = [];
@@ -103,7 +120,11 @@ export async function listAllModules(): Promise<TextbookModule[]> {
         }
         return localData;
     } catch (err: any) {
-        console.warn("Module list retrieval failure:", err);
+        console.error("Module list retrieval failure:", err);
+        const msg = err.message || "";
+        if (msg.includes("403") || msg.includes("401")) {
+            throw new Error("Cloud Permission Denied: Your API key might not have File Search (RAG) enabled or needs billing.");
+        }
         return localData;
     }
 }
@@ -125,29 +146,30 @@ export async function createRagStore(displayName: string): Promise<string> {
 
 export async function uploadToRagStore(ragStoreName: string, file: File, onProgress?: (msg: string) => void): Promise<void> {
     const ai = new GoogleGenAI({ apiKey: process.env.API_KEY }) as any;
-    if (onProgress) onProgress(`Preparing bytes for ${file.name}...`);
     
     try {
-        // Convert File to bytes to avoid SDK hangs in the browser
-        const fileBytes = await fileToUint8Array(file);
+        if (onProgress) onProgress(`Reading ${file.name}...`);
+        const buffer = await file.arrayBuffer();
+        const bytes = new Uint8Array(buffer);
+        const base64Data = encodeBase64(bytes);
         
-        if (onProgress) onProgress(`Uploading ${file.name} to Cloud...`);
+        if (onProgress) onProgress(`Transferring bytes to cloud...`);
 
         const op: any = await ai.fileSearchStores.uploadToFileSearchStore({
             fileSearchStoreName: ragStoreName,
             file: {
-                data: fileBytes,
+                data: base64Data,
                 mimeType: file.type || 'application/pdf',
                 displayName: file.name
             }
         });
         
-        if (!op || !op.name) throw new Error("Upload handshake failed.");
+        if (!op || !op.name) throw new Error("Cloud handshake failed.");
 
         let attempts = 0;
-        while (attempts < 100) {
-            if (onProgress) onProgress(`Cloud indexing ${file.name} (Attempt ${attempts+1}/100)...`);
-            await delay(3000);
+        while (attempts < 60) {
+            if (onProgress) onProgress(`Cloud indexing ${file.name} (${attempts+1}/60)...`);
+            await delay(4000);
             
             const currentOp: any = await ai.operations.get({ name: op.name });
             if (currentOp?.done) {
@@ -158,13 +180,9 @@ export async function uploadToRagStore(ragStoreName: string, file: File, onProgr
             }
             attempts++;
         }
-        throw new Error("Cloud processing timed out. The file might appear after a refresh.");
+        throw new Error("Cloud processing timed out. The file should appear shortly.");
     } catch (err: any) {
-        console.error("Upload Error Details:", err);
-        const msg = (err.message || "").toLowerCase();
-        if (msg.includes('404')) {
-            throw new Error("Cloud repository link lost. Please refresh the library.");
-        }
+        console.error("Upload Error:", err);
         throw err;
     }
 }
@@ -230,25 +248,6 @@ export async function connectLive(callbacks: any, method: string = 'standard'): 
         }
     });
 }
-
-export const encodeBase64 = (b: Uint8Array) => {
-    let binary = '';
-    const len = b.byteLength;
-    for (let i = 0; i < len; i++) {
-        binary += String.fromCharCode(b[i]);
-    }
-    return btoa(binary);
-};
-
-export const decodeBase64 = (s: string) => {
-    const binaryString = atob(s);
-    const len = binaryString.length;
-    const bytes = new Uint8Array(len);
-    for (let i = 0; i < len; i++) {
-        bytes[i] = binaryString.charCodeAt(i);
-    }
-    return bytes;
-};
 
 export async function decodeAudioData(data: Uint8Array, ctx: AudioContext, sampleRate: number, numChannels: number): Promise<AudioBuffer> {
     const dataInt16 = new Int16Array(data.buffer);
