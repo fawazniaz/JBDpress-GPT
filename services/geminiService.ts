@@ -15,7 +15,6 @@ function getMimeType(file: File): string {
     const name = file.name || "";
     const ext = name.split('.').pop()?.toLowerCase();
     
-    // Hard-coded mapping to ensure we don't send 'application/octet-stream'
     const mimeMap: Record<string, string> = {
         'pdf': 'application/pdf',
         'txt': 'text/plain',
@@ -24,11 +23,9 @@ function getMimeType(file: File): string {
     };
 
     if (ext && mimeMap[ext]) return mimeMap[ext];
-
     if (file.type && file.type.trim() !== '' && file.type !== 'application/octet-stream') {
         return file.type;
     }
-    
     return 'application/pdf'; 
 }
 
@@ -129,7 +126,8 @@ export async function listAllModules(): Promise<TextbookModule[]> {
 export async function createRagStore(displayName: string): Promise<string> {
     const ai = getAIClient();
     try {
-        const ragStore: any = await ai.fileSearchStores.create({ config: { displayName } });
+        // Updated structure for the create call
+        const ragStore: any = await ai.fileSearchStores.create({ displayName });
         return ragStore.name;
     } catch (err: any) {
         throw new Error(`Cloud Error: ${err.message}`);
@@ -138,8 +136,6 @@ export async function createRagStore(displayName: string): Promise<string> {
 
 /**
  * Uploads a file to a RAG store.
- * The SDK error "Please provide mimeType in the config" implies the mimeType must be
- * present inside a 'config' object passed to the upload method.
  */
 export async function uploadToRagStore(ragStoreName: string, file: File, onProgress?: (msg: string) => void): Promise<void> {
     const ai = getAIClient();
@@ -148,27 +144,26 @@ export async function uploadToRagStore(ragStoreName: string, file: File, onProgr
     try {
         if (onProgress) onProgress(`Reading ${file.name}...`);
         const buffer = await file.arrayBuffer();
-        const data = new Uint8Array(buffer);
+        const base64Data = encodeBase64(new Uint8Array(buffer));
 
         if (onProgress) onProgress(`Uploading ${file.name}...`);
 
         /**
-         * To satisfy the "Please provide mimeType in the config" error:
-         * We wrap the upload parameters such that mimeType is both in the file object
-         * AND inside a top-level 'config' object.
+         * Final corrected structure to satisfy both:
+         * 1. "Can not determine mimeType. Please provide mimeType in the config."
+         * 2. "Unexpected end of input" (by avoiding malformed requests)
          */
         const op: any = await ai.fileSearchStores.uploadToFileSearchStore({
             fileSearchStoreName: ragStoreName,
             file: {
-                data: data,
+                data: base64Data,
                 mimeType: mimeType,
                 displayName: file.name
             },
+            // The 'config' object containing 'mimeType' is the key SDK requirement
             config: {
                 mimeType: mimeType
-            },
-            // Redundant top-level property just in case
-            mimeType: mimeType 
+            }
         });
         
         if (!op || !op.name) throw new Error("Cloud rejected the upload request.");
@@ -191,7 +186,6 @@ export async function uploadToRagStore(ragStoreName: string, file: File, onProgr
         throw new Error("Indexing timed out. The file might still appear later.");
     } catch (err: any) {
         console.error("Upload process failed:", err);
-        // Throw the specific error message to help debug if it happens again
         throw new Error(err.message || "An unknown error occurred during cloud upload.");
     }
 }
