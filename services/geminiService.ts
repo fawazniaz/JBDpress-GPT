@@ -9,29 +9,35 @@ import { QueryResult, TextbookModule, CloudFile } from '../types';
 const STABLE_REGISTRY_KEY = 'JBDPRESS_STABLE_REGISTRY_FINAL';
 
 /**
- * Robust extension-to-mime mapper.
- * For RAG/Textbook purposes, we prioritize PDF if detection is uncertain.
+ * Enhanced extension-to-mime mapper for RAG-compatible formats.
  */
 function getMimeType(file: File): string {
+    const name = file.name || "";
+    const ext = name.split('.').pop()?.toLowerCase();
+    
+    // Hardcoded extension map for Gemini RAG compatibility
+    switch (ext) {
+        case 'pdf': return 'application/pdf';
+        case 'txt': return 'text/plain';
+        case 'md': return 'text/markdown';
+        case 'html': return 'text/html';
+        case 'htm': return 'text/html';
+        case 'docx': return 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+        case 'doc': return 'application/msword';
+        case 'csv': return 'text/csv';
+    }
+    
+    // If extension didn't match, check browser's detected type
     if (file.type && file.type.trim() !== '' && file.type !== 'application/octet-stream') {
         return file.type;
     }
     
-    const ext = file.name.split('.').pop()?.toLowerCase();
-    switch (ext) {
-        case 'pdf': return 'application/pdf';
-        case 'txt': return 'text/plain';
-        case 'doc': return 'application/msword';
-        case 'docx': return 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
-        case 'md': return 'text/markdown';
-        case 'csv': return 'text/csv';
-        case 'html': return 'text/html';
-        default: return 'application/pdf'; // Default to PDF for textbook context if unknown
-    }
+    // Last resort default for textbook modules
+    return 'application/pdf'; 
 }
 
 /**
- * Encodes a Uint8Array to a Base64 string manually.
+ * Encodes a Uint8Array to a Base64 string.
  */
 export const encodeBase64 = (b: Uint8Array): string => {
     let binary = '';
@@ -129,7 +135,7 @@ export async function listAllModules(): Promise<TextbookModule[]> {
         console.error("Module sync failed:", err);
         const msg = (err.message || "").toLowerCase();
         if (msg.includes("403") || msg.includes("permission_denied")) {
-            throw new Error("Billing/Permission Error: This feature requires a Gemini API key from a project with an active billing account.");
+            throw new Error("Billing/Permission Error: RAG requires a Gemini API key from a project with an active billing account.");
         }
         throw err;
     }
@@ -140,11 +146,11 @@ export async function listAllModules(): Promise<TextbookModule[]> {
  */
 export async function createRagStore(displayName: string): Promise<string> {
     const ai = getAIClient();
-    if (!ai.fileSearchStores) throw new Error("File Search API is not supported by this SDK version.");
+    if (!ai.fileSearchStores) throw new Error("File Search API is not supported.");
     
     try {
         const ragStore: any = await ai.fileSearchStores.create({ config: { displayName } });
-        if (!ragStore || !ragStore.name) throw new Error("Failed to initialize cloud store.");
+        if (!ragStore || !ragStore.name) throw new Error("Cloud store creation failed.");
         return ragStore.name;
     } catch (err: any) {
         console.error("Store creation error:", err);
@@ -153,7 +159,8 @@ export async function createRagStore(displayName: string): Promise<string> {
 }
 
 /**
- * Uploads a file to a specific module with correct SDK structure for base64.
+ * Uploads a file to a specific module.
+ * Uses direct Uint8Array which is the standard for browser-based SDK binary transport.
  */
 export async function uploadToRagStore(ragStoreName: string, file: File, onProgress?: (msg: string) => void): Promise<void> {
     const ai = getAIClient();
@@ -164,44 +171,44 @@ export async function uploadToRagStore(ragStoreName: string, file: File, onProgr
         if (onProgress) onProgress(`Reading ${file.name}...`);
         const buffer = await file.arrayBuffer();
         const bytes = new Uint8Array(buffer);
-        const base64Data = encodeBase64(bytes);
         
         if (onProgress) onProgress(`Uploading ${file.name} (${mimeType})...`);
 
-        // Use 'inlineData' structure which is the GenAI SDK's standard for base64 payloads
+        // Use direct property mapping for the file object as expected by fileSearchStores
         const op: any = await ai.fileSearchStores.uploadToFileSearchStore({
             fileSearchStoreName: ragStoreName,
             file: {
-                displayName: file.name,
-                inlineData: {
-                    data: base64Data,
-                    mimeType: mimeType
-                }
+                data: bytes,
+                mimeType: mimeType,
+                // Some SDK versions might look for mime_type
+                mime_type: mimeType, 
+                displayName: file.name
             }
         });
         
-        if (!op || !op.name) throw new Error("Cloud upload rejected the file data structure.");
+        if (!op || !op.name) throw new Error("Upload initiation failed.");
 
         let attempts = 0;
-        const maxAttempts = 120; // 6 minutes total
+        const maxAttempts = 150; 
         while (attempts < maxAttempts) {
             if (onProgress) onProgress(`Cloud processing (${attempts + 1}/${maxAttempts})...`);
-            await delay(3000);
+            await delay(4000);
             
             const currentOp: any = await ai.operations.get({ name: op.name });
             if (currentOp?.done) {
                 if (currentOp.error) {
-                    throw new Error(currentOp.error.message || "The cloud failed to index this document.");
+                    throw new Error(currentOp.error.message || "Cloud indexing failure.");
                 }
                 return;
             }
             attempts++;
         }
-        throw new Error("Indexing is taking longer than expected. The file should appear in your library shortly.");
+        throw new Error("The cloud is taking extra time to index. Check your library in a moment.");
     } catch (err: any) {
         console.error("Upload Error:", err);
-        if (err.message && (err.message.includes('mimeType') || err.message.includes('mime_type'))) {
-            throw new Error(`Cloud Type Error: The API couldn't recognize the file format. Please ensure your textbooks are standard PDF or Text files.`);
+        const rawMsg = err.message || "";
+        if (rawMsg.toLowerCase().includes('mimetype') || rawMsg.toLowerCase().includes('mime_type')) {
+            throw new Error(`MIME Type Conflict: The cloud didn't accept the format "${getMimeType(file)}". Try renaming the file or ensuring it's a standard PDF.`);
         }
         throw err;
     }
@@ -249,34 +256,28 @@ export async function deleteRawFile(fileName: string): Promise<void> {
     await ai.files.delete({ name: fileName });
 }
 
-/**
- * Performs a file search using Gemini with textbook context.
- */
 export async function fileSearch(ragStoreName: string, query: string, method: string = 'standard', useFastMode: boolean = false, bookFocus?: string): Promise<QueryResult> {
     const ai = getAIClient();
     const response: GenerateContentResponse = await ai.models.generateContent({
         model: 'gemini-3-flash-preview',
         contents: query,
         config: {
-            systemInstruction: `You are a specialized textbook tutor for JBD Press. Answer based ONLY on the provided textbook context. Method: ${method}. Focus: ${bookFocus || 'Comprehensive'}`,
+            systemInstruction: `You are a specialized textbook tutor for JBD Press. Answer based ONLY on the provided textbook context. Method: ${method}.`,
             tools: [{ fileSearch: { fileSearchStoreNames: [ragStoreName] } } as any]
         }
     });
     return {
-        text: response.text || "I couldn't find a relevant answer in the textbooks.",
+        text: response.text || "No relevant information found in textbooks.",
         groundingChunks: response.candidates?.[0]?.groundingMetadata?.groundingChunks || []
     };
 }
 
-/**
- * Generates 3 example questions from the textbook store to help students.
- */
 export async function generateExampleQuestions(ragStoreName: string): Promise<string[]> {
     const ai = getAIClient();
     try {
         const response: GenerateContentResponse = await ai.models.generateContent({
             model: 'gemini-3-flash-preview',
-            contents: "Generate 3 short example questions that a student could ask based on these textbooks.",
+            contents: "Generate 3 example questions from these textbooks.",
             config: {
                 tools: [{ fileSearch: { fileSearchStoreNames: [ragStoreName] } } as any],
                 responseMimeType: "application/json",
@@ -286,29 +287,13 @@ export async function generateExampleQuestions(ragStoreName: string): Promise<st
                 }
             }
         });
-        const jsonStr = response.text?.trim();
-        if (jsonStr) {
-            return JSON.parse(jsonStr);
-        }
+        return JSON.parse(response.text?.trim() || "[]");
     } catch (e) {
-        console.error("Failed to generate example questions", e);
+        return ["Summary of key chapters?", "Main terms explained?", "Core concepts?"];
     }
-    return [
-        "What are the main topics covered in this module?",
-        "Can you summarize the core concepts discussed in the text?",
-        "Help me understand the most complex part of this textbook."
-    ];
 }
 
-/**
- * Initializes a Gemini Live API connection for real-time tutoring.
- */
-export function connectLive(callbacks: {
-    onopen: () => void;
-    onmessage: (message: any) => void;
-    onclose: (e: CloseEvent) => void;
-    onerror: (e: ErrorEvent) => void;
-}, method: string = 'standard') {
+export function connectLive(callbacks: any, method: string = 'standard') {
     const ai = getAIClient();
     return ai.live.connect({
         model: 'gemini-2.5-flash-native-audio-preview-12-2025',
@@ -318,26 +303,17 @@ export function connectLive(callbacks: {
             speechConfig: {
                 voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Puck' } },
             },
-            systemInstruction: `You are a helpful JBD Press tutor. Assist the student using only information from their textbooks. Method: ${method}. If you don't know something, suggest they check a specific chapter.`,
+            systemInstruction: `Tutor (Method: ${method}). Use textbooks only.`,
             outputAudioTranscription: {},
             inputAudioTranscription: {},
         },
     });
 }
 
-/**
- * Helper to decode raw PCM audio bytes returned by the Live API.
- */
-export async function decodeAudioData(
-  data: Uint8Array,
-  ctx: AudioContext,
-  sampleRate: number,
-  numChannels: number,
-): Promise<AudioBuffer> {
+export async function decodeAudioData(data: Uint8Array, ctx: AudioContext, sampleRate: number, numChannels: number): Promise<AudioBuffer> {
   const dataInt16 = new Int16Array(data.buffer);
   const frameCount = dataInt16.length / numChannels;
   const buffer = ctx.createBuffer(numChannels, frameCount, sampleRate);
-
   for (let channel = 0; channel < numChannels; channel++) {
     const channelData = buffer.getChannelData(channel);
     for (let i = 0; i < frameCount; i++) {
