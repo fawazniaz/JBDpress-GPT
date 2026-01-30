@@ -10,24 +10,27 @@ const STABLE_REGISTRY_KEY = 'JBDPRESS_STABLE_REGISTRY_FINAL';
 
 /**
  * Standardizes the MIME type for RAG compatibility.
+ * Some browsers fail to detect PDF types correctly, so we use extension as a fallback.
  */
 function getMimeType(file: File): string {
+    const name = file.name || "";
+    const ext = name.split('.').pop()?.toLowerCase();
+    
+    // Hard check extensions first to prevent "application/octet-stream" issues
+    if (ext === 'pdf') return 'application/pdf';
+    if (ext === 'txt') return 'text/plain';
+    if (ext === 'md') return 'text/markdown';
+    if (ext === 'docx') return 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+
     if (file.type && file.type.trim() !== '' && file.type !== 'application/octet-stream') {
         return file.type;
     }
-    const name = file.name || "";
-    const ext = name.split('.').pop()?.toLowerCase();
-    switch (ext) {
-        case 'pdf': return 'application/pdf';
-        case 'txt': return 'text/plain';
-        case 'md': return 'text/markdown';
-        case 'docx': return 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
-        default: return 'application/pdf'; // Default to PDF for textbooks if unknown
-    }
+    
+    return 'application/pdf'; // Default fallback for textbooks
 }
 
 /**
- * Manual Base64 encoding for binary data.
+ * Manual Base64 encoding.
  */
 export const encodeBase64 = (b: Uint8Array): string => {
     let binary = '';
@@ -131,7 +134,9 @@ export async function createRagStore(displayName: string): Promise<string> {
 }
 
 /**
- * Uploads a file using the inlineData pattern which is the canonical way for binary in the GenAI SDK.
+ * Uploads a file to a RAG store.
+ * We use the 'data' property directly on the file object and provide mimeType at the top level
+ * to satisfy the SDK's validation requirements.
  */
 export async function uploadToRagStore(ragStoreName: string, file: File, onProgress?: (msg: string) => void): Promise<void> {
     const ai = getAIClient();
@@ -140,22 +145,22 @@ export async function uploadToRagStore(ragStoreName: string, file: File, onProgr
     try {
         if (onProgress) onProgress(`Reading ${file.name}...`);
         const buffer = await file.arrayBuffer();
-        const base64Data = encodeBase64(new Uint8Array(buffer));
+        const data = new Uint8Array(buffer);
 
         if (onProgress) onProgress(`Uploading ${file.name}...`);
 
         /**
-         * Use the inlineData structure inside the file object. 
-         * This ensures mimeType is provided exactly where the SDK's internal validator expects it.
+         * For the uploadToFileSearchStore method in the @google/genai SDK:
+         * 1. The 'file' object needs 'data', 'mimeType', and 'displayName'.
+         * 2. The top-level request object often requires 'mimeType' to pass validation.
          */
         const op: any = await ai.fileSearchStores.uploadToFileSearchStore({
             fileSearchStoreName: ragStoreName,
+            mimeType: mimeType, // Required by some SDK versions for validation
             file: {
-                displayName: file.name,
-                inlineData: {
-                    data: base64Data,
-                    mimeType: mimeType
-                }
+                data: data,
+                mimeType: mimeType,
+                displayName: file.name
             }
         });
         
