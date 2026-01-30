@@ -9,10 +9,13 @@ import { QueryResult, TextbookModule, CloudFile } from '../types';
 const STABLE_REGISTRY_KEY = 'JBDPRESS_STABLE_REGISTRY_FINAL';
 
 /**
- * Manual extension-to-mime mapper to ensure API compatibility.
+ * Robust extension-to-mime mapper.
+ * For RAG/Textbook purposes, we prioritize PDF if detection is uncertain.
  */
 function getMimeType(file: File): string {
-    if (file.type && file.type.trim() !== '') return file.type;
+    if (file.type && file.type.trim() !== '' && file.type !== 'application/octet-stream') {
+        return file.type;
+    }
     
     const ext = file.name.split('.').pop()?.toLowerCase();
     switch (ext) {
@@ -23,7 +26,7 @@ function getMimeType(file: File): string {
         case 'md': return 'text/markdown';
         case 'csv': return 'text/csv';
         case 'html': return 'text/html';
-        default: return 'application/octet-stream';
+        default: return 'application/pdf'; // Default to PDF for textbook context if unknown
     }
 }
 
@@ -150,7 +153,7 @@ export async function createRagStore(displayName: string): Promise<string> {
 }
 
 /**
- * Uploads a file to a specific module with robust mimeType handling.
+ * Uploads a file to a specific module with correct SDK structure for base64.
  */
 export async function uploadToRagStore(ragStoreName: string, file: File, onProgress?: (msg: string) => void): Promise<void> {
     const ai = getAIClient();
@@ -158,26 +161,29 @@ export async function uploadToRagStore(ragStoreName: string, file: File, onProgr
     try {
         const mimeType = getMimeType(file);
         
-        if (onProgress) onProgress(`Preparing ${file.name}...`);
+        if (onProgress) onProgress(`Reading ${file.name}...`);
         const buffer = await file.arrayBuffer();
         const bytes = new Uint8Array(buffer);
         const base64Data = encodeBase64(bytes);
         
-        if (onProgress) onProgress(`Uploading bytes (${mimeType})...`);
+        if (onProgress) onProgress(`Uploading ${file.name} (${mimeType})...`);
 
+        // Use 'inlineData' structure which is the GenAI SDK's standard for base64 payloads
         const op: any = await ai.fileSearchStores.uploadToFileSearchStore({
             fileSearchStoreName: ragStoreName,
             file: {
-                data: base64Data,
-                mimeType: mimeType,
-                displayName: file.name
+                displayName: file.name,
+                inlineData: {
+                    data: base64Data,
+                    mimeType: mimeType
+                }
             }
         });
         
-        if (!op || !op.name) throw new Error("Cloud upload rejected the file data.");
+        if (!op || !op.name) throw new Error("Cloud upload rejected the file data structure.");
 
         let attempts = 0;
-        const maxAttempts = 100; // Increased for larger files
+        const maxAttempts = 120; // 6 minutes total
         while (attempts < maxAttempts) {
             if (onProgress) onProgress(`Cloud processing (${attempts + 1}/${maxAttempts})...`);
             await delay(3000);
@@ -191,9 +197,12 @@ export async function uploadToRagStore(ragStoreName: string, file: File, onProgr
             }
             attempts++;
         }
-        throw new Error("Indexing is taking longer than expected. Please check back in a minute.");
+        throw new Error("Indexing is taking longer than expected. The file should appear in your library shortly.");
     } catch (err: any) {
         console.error("Upload Error:", err);
+        if (err.message && (err.message.includes('mimeType') || err.message.includes('mime_type'))) {
+            throw new Error(`Cloud Type Error: The API couldn't recognize the file format. Please ensure your textbooks are standard PDF or Text files.`);
+        }
         throw err;
     }
 }
@@ -240,6 +249,9 @@ export async function deleteRawFile(fileName: string): Promise<void> {
     await ai.files.delete({ name: fileName });
 }
 
+/**
+ * Performs a file search using Gemini with textbook context.
+ */
 export async function fileSearch(ragStoreName: string, query: string, method: string = 'standard', useFastMode: boolean = false, bookFocus?: string): Promise<QueryResult> {
     const ai = getAIClient();
     const response: GenerateContentResponse = await ai.models.generateContent({
@@ -252,50 +264,85 @@ export async function fileSearch(ragStoreName: string, query: string, method: st
     });
     return {
         text: response.text || "I couldn't find a relevant answer in the textbooks.",
-        groundingChunks: response.candidates?.[0]?.groundingMetadata?.groundingChunks || [],
+        groundingChunks: response.candidates?.[0]?.groundingMetadata?.groundingChunks || []
     };
 }
 
+/**
+ * Generates 3 example questions from the textbook store to help students.
+ */
 export async function generateExampleQuestions(ragStoreName: string): Promise<string[]> {
     const ai = getAIClient();
     try {
-        const response = await ai.models.generateContent({
+        const response: GenerateContentResponse = await ai.models.generateContent({
             model: 'gemini-3-flash-preview',
-            contents: 'Suggest 3 high-quality study questions based on these materials.',
+            contents: "Generate 3 short example questions that a student could ask based on these textbooks.",
             config: {
                 tools: [{ fileSearch: { fileSearchStoreNames: [ragStoreName] } } as any],
-                responseMimeType: 'application/json',
-                responseSchema: { type: Type.ARRAY, items: { type: Type.STRING } }
+                responseMimeType: "application/json",
+                responseSchema: {
+                    type: Type.ARRAY,
+                    items: { type: Type.STRING }
+                }
             }
         });
-        return JSON.parse(response.text || "[]");
-    } catch (e) { 
-        return ["Can you summarize the main themes?", "What are the key terms introduced?", "How does this relate to previous units?"]; 
+        const jsonStr = response.text?.trim();
+        if (jsonStr) {
+            return JSON.parse(jsonStr);
+        }
+    } catch (e) {
+        console.error("Failed to generate example questions", e);
     }
+    return [
+        "What are the main topics covered in this module?",
+        "Can you summarize the core concepts discussed in the text?",
+        "Help me understand the most complex part of this textbook."
+    ];
 }
 
-export async function connectLive(callbacks: any, method: string = 'standard'): Promise<any> {
+/**
+ * Initializes a Gemini Live API connection for real-time tutoring.
+ */
+export function connectLive(callbacks: {
+    onopen: () => void;
+    onmessage: (message: any) => void;
+    onclose: (e: CloseEvent) => void;
+    onerror: (e: ErrorEvent) => void;
+}, method: string = 'standard') {
     const ai = getAIClient();
     return ai.live.connect({
         model: 'gemini-2.5-flash-native-audio-preview-12-2025',
         callbacks,
         config: {
             responseModalities: [Modality.AUDIO],
-            speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Puck' } } },
-            systemInstruction: `You are an interactive tutor (Method: ${method}). Help the student learn from their textbooks.`,
+            speechConfig: {
+                voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Puck' } },
+            },
+            systemInstruction: `You are a helpful JBD Press tutor. Assist the student using only information from their textbooks. Method: ${method}. If you don't know something, suggest they check a specific chapter.`,
             outputAudioTranscription: {},
             inputAudioTranscription: {},
-        }
+        },
     });
 }
 
-export async function decodeAudioData(data: Uint8Array, ctx: AudioContext, sampleRate: number, numChannels: number): Promise<AudioBuffer> {
-    const dataInt16 = new Int16Array(data.buffer);
-    const frameCount = dataInt16.length / numChannels;
-    const buffer = ctx.createBuffer(numChannels, frameCount, sampleRate);
-    for (let channel = 0; channel < numChannels; channel++) {
-        const channelData = buffer.getChannelData(channel);
-        for (let i = 0; i < frameCount; i++) channelData[i] = dataInt16[i * numChannels + channel] / 32768.0;
+/**
+ * Helper to decode raw PCM audio bytes returned by the Live API.
+ */
+export async function decodeAudioData(
+  data: Uint8Array,
+  ctx: AudioContext,
+  sampleRate: number,
+  numChannels: number,
+): Promise<AudioBuffer> {
+  const dataInt16 = new Int16Array(data.buffer);
+  const frameCount = dataInt16.length / numChannels;
+  const buffer = ctx.createBuffer(numChannels, frameCount, sampleRate);
+
+  for (let channel = 0; channel < numChannels; channel++) {
+    const channelData = buffer.getChannelData(channel);
+    for (let i = 0; i < frameCount; i++) {
+      channelData[i] = dataInt16[i * numChannels + channel] / 32768.0;
     }
-    return buffer;
+  }
+  return buffer;
 }
