@@ -22,12 +22,12 @@ function getMimeType(file: File): string {
         case 'txt': return 'text/plain';
         case 'md': return 'text/markdown';
         case 'docx': return 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
-        default: return 'application/pdf'; // Aggressive default for textbooks
+        default: return 'application/pdf'; // Default to PDF for textbooks if unknown
     }
 }
 
 /**
- * Manual Base64 encoding.
+ * Manual Base64 encoding for binary data.
  */
 export const encodeBase64 = (b: Uint8Array): string => {
     let binary = '';
@@ -101,7 +101,7 @@ export async function listAllModules(): Promise<TextbookModule[]> {
                 });
                 const files = filesRes.fileSearchStoreFiles || filesRes.files || [];
                 results.push({
-                    name: s.displayName || s.name.split('/').pop(),
+                    name: s.displayName || s.name.split('/').pop() || "Untitled Module",
                     storeName: s.name,
                     books: files.map((f: any) => f.displayName || f.name)
                 });
@@ -131,28 +131,31 @@ export async function createRagStore(displayName: string): Promise<string> {
 }
 
 /**
- * Uploads a file using the most direct SDK-supported method.
+ * Uploads a file using the inlineData pattern which is the canonical way for binary in the GenAI SDK.
  */
 export async function uploadToRagStore(ragStoreName: string, file: File, onProgress?: (msg: string) => void): Promise<void> {
     const ai = getAIClient();
     const mimeType = getMimeType(file);
     
     try {
+        if (onProgress) onProgress(`Reading ${file.name}...`);
+        const buffer = await file.arrayBuffer();
+        const base64Data = encodeBase64(new Uint8Array(buffer));
+
         if (onProgress) onProgress(`Uploading ${file.name}...`);
 
         /**
-         * The most stable way to upload in recent SDK versions is passing the File (Blob)
-         * directly or a BufferSource. We use ArrayBuffer to ensure binary parity.
+         * Use the inlineData structure inside the file object. 
+         * This ensures mimeType is provided exactly where the SDK's internal validator expects it.
          */
-        const buffer = await file.arrayBuffer();
-        const data = new Uint8Array(buffer);
-
         const op: any = await ai.fileSearchStores.uploadToFileSearchStore({
             fileSearchStoreName: ragStoreName,
             file: {
-                data: data,
-                mimeType: mimeType,
-                displayName: file.name
+                displayName: file.name,
+                inlineData: {
+                    data: base64Data,
+                    mimeType: mimeType
+                }
             }
         });
         
@@ -176,7 +179,6 @@ export async function uploadToRagStore(ragStoreName: string, file: File, onProgr
         throw new Error("Indexing timed out. The file might still appear later.");
     } catch (err: any) {
         console.error("Upload process failed:", err);
-        // Show the actual error message from the Google API
         throw new Error(err.message || "An unknown error occurred during cloud upload.");
     }
 }
@@ -253,7 +255,9 @@ export async function decodeAudioData(data: Uint8Array, ctx: AudioContext, sampl
     const buffer = ctx.createBuffer(numChannels, frameCount, sampleRate);
     for (let channel = 0; channel < numChannels; channel++) {
         const channelData = buffer.getChannelData(channel);
-        for (let i = 0; i < frameCount; i++) channelData[i] = dataInt16[i * numChannels + channel] / 32768.0;
+        for (let i = 0; i < frameCount; i++) {
+            channelData[i] = dataInt16[i * numChannels + channel] / 32768.0;
+        }
     }
     return buffer;
 }
