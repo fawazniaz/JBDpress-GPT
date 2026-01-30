@@ -45,23 +45,36 @@ const App: React.FC = () => {
     const loadingRef = useRef(false);
 
     useEffect(() => {
-        const savedTheme = localStorage.getItem('theme');
-        if (savedTheme === 'dark') {
-            document.documentElement.classList.add('dark');
-            setIsDarkMode(true);
-        }
-        if (process.env.API_KEY && process.env.API_KEY !== '') {
-            setIsApiKeySelected(true);
-        }
-        const savedUser = localStorage.getItem('jbd_user');
-        if (savedUser) {
-            try {
-                setUser(JSON.parse(savedUser));
-                setStatus(AppStatus.Welcome);
-            } catch (e) { setStatus(AppStatus.Login); }
-        } else {
-            setTimeout(() => setStatus(AppStatus.Login), 1000);
-        }
+        const checkApiKey = async () => {
+            if (window.aistudio?.hasSelectedApiKey) {
+                const hasKey = await window.aistudio.hasSelectedApiKey();
+                setIsApiKeySelected(hasKey || (!!process.env.API_KEY && process.env.API_KEY !== ''));
+            } else if (process.env.API_KEY && process.env.API_KEY !== '') {
+                setIsApiKeySelected(true);
+            }
+        };
+
+        const init = async () => {
+            const savedTheme = localStorage.getItem('theme');
+            if (savedTheme === 'dark') {
+                document.documentElement.classList.add('dark');
+                setIsDarkMode(true);
+            }
+            
+            await checkApiKey();
+
+            const savedUser = localStorage.getItem('jbd_user');
+            if (savedUser) {
+                try {
+                    setUser(JSON.parse(savedUser));
+                    setStatus(AppStatus.Welcome);
+                } catch (e) { setStatus(AppStatus.Login); }
+            } else {
+                setStatus(AppStatus.Login);
+            }
+        };
+
+        init();
     }, []);
 
     const fetchLibrary = useCallback(async (force: boolean = false) => {
@@ -114,36 +127,61 @@ const App: React.FC = () => {
         console.error("Non-Blocking Error Detection:", err);
         const msg = (err.message || "").toLowerCase();
         
-        // NEVER BLOCK FOR QUOTA/429
         if (msg.includes("resource_exhausted") || msg.includes("429") || msg.includes("quota") || msg.includes("limit")) {
             setSyncError("Cloud Storage Limit or Rate Limit detected. Please wait 2 minutes or purge files.");
             setIsLibraryLoading(false);
             setIsQueryLoading(false);
-            // Stay in current status, do not go to Error screen
+            return;
+        }
+
+        if (msg.includes("not found") || msg.includes("entity was not found")) {
+            setIsApiKeySelected(false);
+            setSyncError("API Key session expired. Please re-authorize.");
             return;
         }
 
         setError(customTitle || "Operation Failure");
-        setTechnicalDetails(err.message || "No technical details provided.");
+        setTechnicalDetails(err.message || "No technical details provided. Ensure your API key is from a project with billing enabled.");
         setStatus(AppStatus.Error);
     };
 
     const handleUploadTextbooks = async () => {
-        if (!isApiKeySelected || files.length === 0) return;
+        if (!isApiKeySelected && !process.env.API_KEY) {
+            alert("Please authorize Gemini access first.");
+            return;
+        }
+        if (files.length === 0) return;
+        
         setStatus(AppStatus.Uploading);
         try {
-            const moduleLabel = prompt("Enter Module Name:") || "New Module";
-            setUploadProgress({ current: 0, total: files.length, message: "Requesting store..." });
+            const moduleLabel = prompt("Enter Module Name (e.g., Biology Grade 10):") || `Module ${new Date().toLocaleDateString()}`;
+            setUploadProgress({ current: 0, total: files.length, message: "Initializing repository..." });
+            
             const ragStoreName = await geminiService.createRagStore(moduleLabel);
+            
             for (let i = 0; i < files.length; i++) {
-                setUploadProgress({ current: i + 1, total: files.length, message: `Uploading ${files[i].name}...`, fileName: files[i].name });
-                await geminiService.uploadToRagStore(ragStoreName, files[i]);
+                const file = files[i];
+                setUploadProgress({ 
+                    current: i, 
+                    total: files.length, 
+                    message: `Uploading ${file.name}...`, 
+                    fileName: file.name 
+                });
+                
+                await geminiService.uploadToRagStore(ragStoreName, file);
+                setUploadProgress({ 
+                    current: i + 1, 
+                    total: files.length, 
+                    message: `Processing ${file.name}...`, 
+                    fileName: file.name 
+                });
             }
+            
             setFiles([]);
             await fetchLibrary(true);
             setStatus(AppStatus.Welcome);
         } catch (err: any) { 
-            handleError(err, "Upload Interrupted"); 
+            handleError(err, "Upload Failure"); 
             setStatus(AppStatus.Welcome); 
         } finally { 
             setUploadProgress(null); 
@@ -169,25 +207,22 @@ const App: React.FC = () => {
     };
 
     const handlePurgeAll = async () => {
-        if (!confirm("NUCLEAR PURGE: This attempts to wipe EVERYTHING in your cloud project to fix quota issues. Continue?")) return;
+        if (!confirm("This will attempt to wipe all cloud-stored files and modules to reset your 1GB quota. This cannot be undone. Continue?")) return;
         setIsLibraryLoading(true);
-        setSyncError("Purge in progress. Storage may take 2 minutes to refresh.");
+        setSyncError("Purge in progress. Please wait...");
         try {
-            // Delete stores
             for (const store of globalTextbooks) {
                 try { await geminiService.deleteRagStore(store.storeName); } catch (e) {}
-                await new Promise(r => setTimeout(r, 1200));
+                await new Promise(r => setTimeout(r, 1000));
             }
-            // Delete raw files
             for (const file of cloudFiles) {
                 try { await geminiService.deleteRawFile(file.name); } catch (e) {}
-                await new Promise(r => setTimeout(r, 1200));
+                await new Promise(r => setTimeout(r, 1000));
             }
-            // Clear cache
             localStorage.removeItem('JBDPRESS_STABLE_REGISTRY_FINAL');
             setGlobalTextbooks([]);
             setCloudFiles([]);
-            alert("Purge complete. If 'Storage Full' persists, wait 120 seconds for Google's quota clock to reset.");
+            alert("Storage purged. It may take 1-2 minutes for Google's quota to reflect this change.");
             await fetchLibrary(true);
         } catch (err: any) { 
             handleError(err, "Purge Throttled");
@@ -223,7 +258,12 @@ const App: React.FC = () => {
                     files={files}
                     setFiles={setFiles}
                     isApiKeySelected={isApiKeySelected}
-                    onSelectKey={async () => { if (window.aistudio?.openSelectKey) { await window.aistudio.openSelectKey(); setIsApiKeySelected(true); } }}
+                    onSelectKey={async () => { 
+                        if (window.aistudio?.openSelectKey) { 
+                            await window.aistudio.openSelectKey(); 
+                            setIsApiKeySelected(true);
+                        } 
+                    }}
                     toggleDarkMode={toggleDarkMode}
                     isDarkMode={isDarkMode}
                     onLogout={() => { localStorage.removeItem('jbd_user'); setUser(null); setStatus(AppStatus.Login); }}
@@ -253,7 +293,7 @@ const App: React.FC = () => {
                         try {
                             const res = await geminiService.fileSearch(activeRagStoreName!, msg, m, f, b);
                             setChatHistory(prev => [...prev, { role: 'model', parts: [{ text: res.text }] }]);
-                        } catch (e: any) { handleError(e, "Query Throttled"); }
+                        } catch (e: any) { handleError(e, "Query Failure"); }
                         finally { setIsQueryLoading(false); }
                     }}
                     addChatMessage={(role, text) => setChatHistory(prev => [...prev, { role, parts: [{ text }] }])}
@@ -263,15 +303,14 @@ const App: React.FC = () => {
             case AppStatus.Error:
                 return (
                     <div className="flex flex-col h-screen items-center justify-center p-8 bg-gem-onyx-light dark:bg-gem-onyx-dark">
-                        <div className="text-7xl mb-6 animate-pulse">⚠️</div>
+                        <div className="text-7xl mb-6">⚠️</div>
                         <h1 className="text-3xl font-black mb-4 text-red-500 uppercase tracking-tighter">{error || "System Alert"}</h1>
                         <div className="max-w-xl p-8 bg-white dark:bg-gem-slate-dark rounded-[30px] shadow-2xl border border-gem-mist-light dark:border-gem-mist-dark text-center">
                             <p className="text-sm opacity-70 mb-8 leading-relaxed font-bold">{technicalDetails}</p>
                             <div className="flex flex-col sm:flex-row gap-4 justify-center">
-                                <button onClick={() => setStatus(AppStatus.AdminDashboard)} className="bg-gem-teal text-white px-8 py-4 rounded-2xl font-black shadow-lg">Admin Dashboard</button>
-                                <button onClick={() => { setStatus(AppStatus.Welcome); setError(null); setSyncError(null); fetchLibrary(true); }} className="bg-gem-mist-light dark:bg-gem-mist-dark px-8 py-4 rounded-2xl font-black">Force Return Home</button>
+                                <button onClick={() => setStatus(AppStatus.AdminDashboard)} className="bg-gem-teal text-white px-8 py-4 rounded-2xl font-black shadow-lg">Storage Manager</button>
+                                <button onClick={() => { setStatus(AppStatus.Welcome); setError(null); setSyncError(null); fetchLibrary(true); }} className="bg-gem-mist-light dark:bg-gem-mist-dark px-8 py-4 rounded-2xl font-black">Return Home</button>
                             </div>
-                            <p className="mt-6 text-[10px] opacity-40 font-bold">If this screen persists, try clearing browser data or switching networks.</p>
                         </div>
                     </div>
                 );

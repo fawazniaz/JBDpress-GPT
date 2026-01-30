@@ -20,7 +20,7 @@ async function delay(ms: number): Promise<void> {
 }
 
 /**
- * Fetches all raw files in the project. Defensive: returns empty array on failure.
+ * Fetches all raw files in the project.
  */
 export async function listAllCloudFiles(): Promise<CloudFile[]> {
     const ai = new GoogleGenAI({ apiKey: process.env.API_KEY }) as any;
@@ -36,13 +36,13 @@ export async function listAllCloudFiles(): Promise<CloudFile[]> {
                 allFiles = [...allFiles, ...res.files];
             }
             pageToken = res.nextPageToken;
-            if (pageToken) await delay(800); // Throttling
+            if (pageToken) await delay(800);
         } while (pageToken);
         
         return allFiles;
     } catch (e) {
-        console.warn("Could not list cloud files (Quota/Busy):", e);
-        return []; // Non-blocking
+        console.warn("Cloud files list failure:", e);
+        return [];
     }
 }
 
@@ -53,7 +53,7 @@ export async function deleteRawFile(fileName: string): Promise<void> {
 }
 
 /**
- * Fetches all modules and their file lists. Defensive: returns local cache on failure.
+ * Fetches all modules and their file lists.
  */
 export async function listAllModules(): Promise<TextbookModule[]> {
     const localData = getLocalRepository();
@@ -64,7 +64,6 @@ export async function listAllModules(): Promise<TextbookModule[]> {
     let pageToken: string | undefined = undefined;
 
     try {
-        // 1. Fetch all store headers
         do {
             const cloudResponse: any = await ai.fileSearchStores.list({ pageToken, pageSize: 20 });
             const stores = cloudResponse.fileSearchStores || cloudResponse.stores || [];
@@ -73,7 +72,6 @@ export async function listAllModules(): Promise<TextbookModule[]> {
             if (pageToken) await delay(800);
         } while (pageToken);
 
-        // 2. Fetch details for each store SEQUENTIALLY
         const results: TextbookModule[] = [];
         for (const s of allStores) {
             try {
@@ -89,7 +87,7 @@ export async function listAllModules(): Promise<TextbookModule[]> {
             } catch (e) {
                 results.push({ name: s.displayName || s.name, storeName: s.name, books: [] });
             }
-            await delay(500); 
+            await delay(400); 
         }
 
         if (results.length > 0) {
@@ -98,53 +96,57 @@ export async function listAllModules(): Promise<TextbookModule[]> {
         }
         return localData;
     } catch (err) {
-        console.warn("Cloud modules list failed (Quota/Busy):", err);
-        return localData; // Non-blocking: return what we have locally
+        console.warn("Module list retrieval failure:", err);
+        return localData;
     }
 }
 
 export async function createRagStore(displayName: string): Promise<string> {
     const ai = new GoogleGenAI({ apiKey: process.env.API_KEY }) as any;
     const ragStore: any = await ai.fileSearchStores.create({ config: { displayName } });
+    if (!ragStore || !ragStore.name) throw new Error("Failed to create repository metadata.");
     return ragStore.name;
 }
 
 export async function uploadToRagStore(ragStoreName: string, file: File): Promise<void> {
+    // Re-instantiate right before call as per guidelines
     const ai = new GoogleGenAI({ apiKey: process.env.API_KEY }) as any;
+    
+    // Some browser environments fail if the File is passed directly; wrapping in Blob ensures stability
+    const blob = new Blob([file], { type: file.type });
+    
     const op: any = await ai.fileSearchStores.uploadToFileSearchStore({
         fileSearchStoreName: ragStoreName,
-        file: file
+        file: blob
     });
     
+    if (!op || !op.name) throw new Error("Cloud upload rejected. Check your API key billing status.");
+
     let attempts = 0;
-    while (attempts < 40) {
+    while (attempts < 60) { // Max 3 minutes
         await delay(3000);
         const currentOp: any = await ai.operations.get({ name: op.name });
         if (currentOp?.done) {
-            if (currentOp.error) throw new Error(currentOp.error.message);
-            break;
+            if (currentOp.error) {
+                console.error("LRO Error:", currentOp.error);
+                throw new Error(currentOp.error.message || "File processing failed in the cloud.");
+            }
+            return;
         }
         attempts++;
     }
+    throw new Error("Upload timed out. The file may still be processing in the background.");
 }
 
 export async function deleteRagStore(storeName: string): Promise<void> {
     const ai = new GoogleGenAI({ apiKey: process.env.API_KEY }) as any;
     try {
         await ai.fileSearchStores.delete({ fileSearchStoreName: storeName });
-    } catch (e) {}
+    } catch (e) {
+        console.warn("Delete store failure:", e);
+    }
     const local = getLocalRepository().filter(m => m.storeName !== storeName);
     localStorage.setItem(STABLE_REGISTRY_KEY, JSON.stringify(local));
-}
-
-export async function deleteFileFromStore(storeName: string, fileName: string): Promise<void> {
-    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY }) as any;
-    const filesRes: any = await ai.fileSearchStores.listFilesSearchStoreFiles({ fileSearchStoreName: storeName });
-    const files = filesRes.fileSearchStoreFiles || filesRes.files || [];
-    const fileToDelete = files.find((f: any) => f.displayName === fileName || f.name.includes(fileName));
-    if (fileToDelete) {
-        await ai.fileSearchStores.deleteFileSearchStoreFile({ fileSearchStoreFileName: fileToDelete.name });
-    }
 }
 
 export async function fileSearch(ragStoreName: string, query: string, method: string = 'standard', useFastMode: boolean = false, bookFocus?: string): Promise<QueryResult> {
@@ -153,12 +155,12 @@ export async function fileSearch(ragStoreName: string, query: string, method: st
         model: 'gemini-3-flash-preview',
         contents: query,
         config: {
-            systemInstruction: `You are a textbook tutor. Only use textbooks. Method: ${method}`,
+            systemInstruction: `You are a specialized textbook tutor for JBD Press. Use ONLY the provided textbook context to answer. If the information isn't in the textbook, state it clearly. Method: ${method}. Focus: ${bookFocus || 'Comprehensive'}`,
             tools: [{ fileSearch: { fileSearchStoreNames: [ragStoreName] } } as any]
         }
     });
     return {
-        text: response.text || "No specific textbook answer found.",
+        text: response.text || "No relevant information found in the textbooks for this unit.",
         groundingChunks: response.candidates?.[0]?.groundingMetadata?.groundingChunks || [],
     };
 }
@@ -168,15 +170,19 @@ export async function generateExampleQuestions(ragStoreName: string): Promise<st
         const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
         const response = await ai.models.generateContent({
             model: 'gemini-3-flash-preview',
-            contents: 'Suggest 3 textbook questions.',
+            contents: 'Analyze these textbooks and suggest 3 high-quality study questions.',
             config: {
                 tools: [{ fileSearch: { fileSearchStoreNames: [ragStoreName] } } as any],
                 responseMimeType: 'application/json',
                 responseSchema: { type: Type.ARRAY, items: { type: Type.STRING } }
             }
         });
-        return JSON.parse(response.text || "[]");
-    } catch { return ["What are the key concepts?"]; }
+        const text = response.text || "[]";
+        return JSON.parse(text);
+    } catch (e) { 
+        console.warn("Questions generation failure:", e);
+        return ["What are the core concepts covered in this unit?", "Can you summarize the main findings?", "Explain the relationship between the key terms."]; 
+    }
 }
 
 export async function connectLive(callbacks: any, method: string = 'standard'): Promise<any> {
@@ -187,13 +193,32 @@ export async function connectLive(callbacks: any, method: string = 'standard'): 
         config: {
             responseModalities: [Modality.AUDIO],
             speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Puck' } } },
-            systemInstruction: `Assistant (${method}).`,
+            systemInstruction: `You are an interactive tutor (Method: ${method}). Listen and respond to textbook queries using natural, encouraging language.`,
+            outputAudioTranscription: {},
+            inputAudioTranscription: {},
         }
     });
 }
 
-export const encodeBase64 = (b: Uint8Array) => btoa(String.fromCharCode(...b));
-export const decodeBase64 = (s: string) => new Uint8Array(atob(s).split('').map(c => c.charCodeAt(0)));
+export const encodeBase64 = (b: Uint8Array) => {
+    let binary = '';
+    const len = b.byteLength;
+    for (let i = 0; i < len; i++) {
+        binary += String.fromCharCode(b[i]);
+    }
+    return btoa(binary);
+};
+
+export const decodeBase64 = (s: string) => {
+    const binaryString = atob(s);
+    const len = binaryString.length;
+    const bytes = new Uint8Array(len);
+    for (let i = 0; i < len; i++) {
+        bytes[i] = binaryString.charCodeAt(i);
+    }
+    return bytes;
+};
+
 export async function decodeAudioData(data: Uint8Array, ctx: AudioContext, sampleRate: number, numChannels: number): Promise<AudioBuffer> {
     const dataInt16 = new Int16Array(data.buffer);
     const frameCount = dataInt16.length / numChannels;
