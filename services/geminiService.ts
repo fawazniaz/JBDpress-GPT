@@ -8,18 +8,10 @@ import { QueryResult, TextbookModule, CloudFile } from '../types';
 
 const STABLE_REGISTRY_KEY = 'JBDPRESS_STABLE_REGISTRY_FINAL';
 
-function getLocalRepository(): TextbookModule[] {
-    try {
-        const data = JSON.parse(localStorage.getItem(STABLE_REGISTRY_KEY) || '[]');
-        return Array.isArray(data) ? data : [];
-    } catch (e) { return []; }
-}
-
-async function delay(ms: number): Promise<void> {
-    return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-export const encodeBase64 = (b: Uint8Array) => {
+/**
+ * Encodes a Uint8Array to a Base64 string manually to avoid dependencies.
+ */
+export const encodeBase64 = (b: Uint8Array): string => {
     let binary = '';
     const len = b.byteLength;
     for (let i = 0; i < len; i++) {
@@ -28,7 +20,10 @@ export const encodeBase64 = (b: Uint8Array) => {
     return btoa(binary);
 };
 
-export const decodeBase64 = (s: string) => {
+/**
+ * Decodes a Base64 string to a Uint8Array manually.
+ */
+export const decodeBase64 = (s: string): Uint8Array => {
     const binaryString = atob(s);
     const len = binaryString.length;
     const bytes = new Uint8Array(len);
@@ -38,71 +33,59 @@ export const decodeBase64 = (s: string) => {
     return bytes;
 };
 
-/**
- * Fetches all raw files in the project.
- */
-export async function listAllCloudFiles(): Promise<CloudFile[]> {
-    const key = process.env.API_KEY;
-    if (!key) return [];
-    
-    const ai = new GoogleGenAI({ apiKey: key }) as any;
-    if (!ai.files) return [];
-    
-    let allFiles: CloudFile[] = [];
-    let pageToken: string | undefined = undefined;
-    
-    try {
-        do {
-            const res: any = await ai.files.list({ pageToken, pageSize: 50 });
-            if (res.files) {
-                allFiles = [...allFiles, ...res.files];
-            }
-            pageToken = res.nextPageToken;
-            if (pageToken) await delay(500);
-        } while (pageToken);
-        
-        return allFiles;
-    } catch (e) {
-        console.warn("Cloud files list failure:", e);
-        return [];
-    }
+async function delay(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-export async function deleteRawFile(fileName: string): Promise<void> {
-    const key = process.env.API_KEY;
-    if (!key) return;
-    const ai = new GoogleGenAI({ apiKey: key }) as any;
-    if (!ai.files) return;
-    await ai.files.delete({ name: fileName });
+function getLocalRepository(): TextbookModule[] {
+    try {
+        const data = JSON.parse(localStorage.getItem(STABLE_REGISTRY_KEY) || '[]');
+        return Array.isArray(data) ? data : [];
+    } catch (e) { return []; }
+}
+
+/**
+ * Creates a fresh AI instance with the current API Key.
+ */
+function getAIClient() {
+    const apiKey = process.env.API_KEY;
+    if (!apiKey || apiKey === '') {
+        throw new Error("API Key is missing. Please authorize access.");
+    }
+    return new GoogleGenAI({ apiKey }) as any;
 }
 
 /**
  * Fetches all modules and their file lists.
  */
 export async function listAllModules(): Promise<TextbookModule[]> {
-    const key = process.env.API_KEY;
-    const localData = getLocalRepository();
+    const ai = getAIClient();
     
-    if (!key || key.trim() === '') {
-        throw new Error("No API Key detected. Please use the 'Authorize' button.");
+    // Check if the experimental File Search feature is available in this SDK context
+    if (!ai.fileSearchStores) {
+        console.warn("fileSearchStores API not found in SDK instance.");
+        return getLocalRepository();
     }
 
-    const ai = new GoogleGenAI({ apiKey: key }) as any;
-    if (!ai.fileSearchStores) return localData;
-
     try {
-        console.debug("Attempting to list File Search Stores...");
         let allStores: any[] = [];
         let pageToken: string | undefined = undefined;
 
+        // 1. List all stores
         do {
             const cloudResponse: any = await ai.fileSearchStores.list({ pageToken, pageSize: 20 });
             const stores = cloudResponse.fileSearchStores || cloudResponse.stores || [];
             allStores = [...allStores, ...stores];
             pageToken = cloudResponse.nextPageToken;
-            if (pageToken) await delay(500);
+            if (pageToken) await delay(400);
         } while (pageToken);
 
+        if (allStores.length === 0) {
+            localStorage.setItem(STABLE_REGISTRY_KEY, '[]');
+            return [];
+        }
+
+        // 2. Fetch files for each store
         const results: TextbookModule[] = [];
         for (const s of allStores) {
             try {
@@ -118,74 +101,67 @@ export async function listAllModules(): Promise<TextbookModule[]> {
             } catch (e) {
                 results.push({ name: s.displayName || s.name, storeName: s.name, books: [] });
             }
+            await delay(200);
         }
 
-        if (results.length > 0) {
-            localStorage.setItem(STABLE_REGISTRY_KEY, JSON.stringify(results));
-            return results;
-        }
-        
-        // If we reached here, the call succeeded but returned 0 stores.
-        localStorage.setItem(STABLE_REGISTRY_KEY, '[]');
-        return [];
+        localStorage.setItem(STABLE_REGISTRY_KEY, JSON.stringify(results));
+        return results;
     } catch (err: any) {
-        console.error("Critical error listing modules:", err);
+        console.error("Module sync failed:", err);
         const msg = (err.message || "").toLowerCase();
         if (msg.includes("403") || msg.includes("permission_denied")) {
-            throw new Error("Permission Denied: Ensure your API Key is from a project with billing enabled for File Search (RAG).");
+            throw new Error("Billing/Permission Error: RAG features require a paid Gemini API key.");
         }
-        if (msg.includes("401") || msg.includes("unauthenticated")) {
-            throw new Error("Invalid API Key: Please refresh your key and try again.");
-        }
-        // Fallback to local data if it's a transient network error
-        return localData;
-    }
-}
-
-export async function createRagStore(displayName: string): Promise<string> {
-    const key = process.env.API_KEY;
-    if (!key) throw new Error("API Key missing.");
-    
-    const ai = new GoogleGenAI({ apiKey: key }) as any;
-    try {
-        console.debug("Creating Rag Store:", displayName);
-        const ragStore: any = await ai.fileSearchStores.create({ config: { displayName } });
-        if (!ragStore || !ragStore.name) throw new Error("Handshake failed: No store name returned.");
-        return ragStore.name;
-    } catch (err: any) {
-        console.error("Store creation error:", err);
         throw err;
     }
 }
 
-export async function uploadToRagStore(ragStoreName: string, file: File, onProgress?: (msg: string) => void): Promise<void> {
-    const key = process.env.API_KEY;
-    if (!key) throw new Error("API Key missing.");
-    
-    const ai = new GoogleGenAI({ apiKey: key }) as any;
+/**
+ * Creates a new Rag Store (Textbook Module).
+ */
+export async function createRagStore(displayName: string): Promise<string> {
+    const ai = getAIClient();
+    if (!ai.fileSearchStores) throw new Error("File Search API is not supported by this key/SDK.");
     
     try {
-        if (onProgress) onProgress(`Reading ${file.name} bytes...`);
+        const ragStore: any = await ai.fileSearchStores.create({ config: { displayName } });
+        if (!ragStore || !ragStore.name) throw new Error("Failed to create store: No ID returned.");
+        return ragStore.name;
+    } catch (err: any) {
+        console.error("Store creation error:", err);
+        throw new Error(`Cloud Handshake Failed: ${err.message || 'Unknown API Error'}`);
+    }
+}
+
+/**
+ * Uploads a file to a specific module.
+ */
+export async function uploadToRagStore(ragStoreName: string, file: File, onProgress?: (msg: string) => void): Promise<void> {
+    const ai = getAIClient();
+    
+    try {
+        if (onProgress) onProgress(`Reading ${file.name}...`);
         const buffer = await file.arrayBuffer();
         const bytes = new Uint8Array(buffer);
+        const base64Data = encodeBase64(bytes);
         
         if (onProgress) onProgress(`Transferring to cloud...`);
 
-        // Use raw bytes (Uint8Array) for the data field
         const op: any = await ai.fileSearchStores.uploadToFileSearchStore({
             fileSearchStoreName: ragStoreName,
             file: {
-                data: bytes,
+                data: base64Data,
                 mimeType: file.type || 'application/pdf',
                 displayName: file.name
             }
         });
         
-        if (!op || !op.name) throw new Error("Cloud upload initiation failed.");
+        if (!op || !op.name) throw new Error("Upload initiation failed: No operation returned.");
 
         let attempts = 0;
-        while (attempts < 60) {
-            if (onProgress) onProgress(`Cloud indexing (${attempts + 1}/60)...`);
+        const maxAttempts = 60;
+        while (attempts < maxAttempts) {
+            if (onProgress) onProgress(`Cloud indexing (${attempts + 1}/${maxAttempts})...`);
             await delay(4000);
             
             const currentOp: any = await ai.operations.get({ name: op.name });
@@ -197,17 +173,40 @@ export async function uploadToRagStore(ragStoreName: string, file: File, onProgr
             }
             attempts++;
         }
-        throw new Error("Cloud indexing timed out.");
+        throw new Error("Indexing timed out. The file might still appear shortly.");
     } catch (err: any) {
-        console.error("RAG Upload Error:", err);
+        console.error("Upload Error:", err);
         throw err;
     }
 }
 
+/**
+ * Fetches all raw files for the dashboard.
+ */
+export async function listAllCloudFiles(): Promise<CloudFile[]> {
+    const ai = getAIClient();
+    if (!ai.files) return [];
+    
+    let allFiles: CloudFile[] = [];
+    let pageToken: string | undefined = undefined;
+    
+    try {
+        do {
+            const res: any = await ai.files.list({ pageToken, pageSize: 50 });
+            if (res.files) {
+                allFiles = [...allFiles, ...res.files];
+            }
+            pageToken = res.nextPageToken;
+            if (pageToken) await delay(300);
+        } while (pageToken);
+        return allFiles;
+    } catch (e) {
+        return [];
+    }
+}
+
 export async function deleteRagStore(storeName: string): Promise<void> {
-    const key = process.env.API_KEY;
-    if (!key) return;
-    const ai = new GoogleGenAI({ apiKey: key }) as any;
+    const ai = getAIClient();
     try {
         await ai.fileSearchStores.delete({ fileSearchStoreName: storeName });
     } catch (e) {
@@ -217,60 +216,55 @@ export async function deleteRagStore(storeName: string): Promise<void> {
     localStorage.setItem(STABLE_REGISTRY_KEY, JSON.stringify(local));
 }
 
+export async function deleteRawFile(fileName: string): Promise<void> {
+    const ai = getAIClient();
+    if (!ai.files) return;
+    await ai.files.delete({ name: fileName });
+}
+
 export async function fileSearch(ragStoreName: string, query: string, method: string = 'standard', useFastMode: boolean = false, bookFocus?: string): Promise<QueryResult> {
-    const key = process.env.API_KEY;
-    if (!key) throw new Error("API Key missing.");
-    const ai = new GoogleGenAI({ apiKey: key });
-    
+    const ai = getAIClient();
     const response: GenerateContentResponse = await ai.models.generateContent({
         model: 'gemini-3-flash-preview',
         contents: query,
         config: {
-            systemInstruction: `You are a specialized textbook tutor for JBD Press. Use ONLY the provided textbook context to answer. If the information isn't in the textbook, state it clearly. Method: ${method}. Focus: ${bookFocus || 'Comprehensive'}`,
+            systemInstruction: `You are a specialized textbook tutor for JBD Press. Use ONLY the provided textbook context to answer. Method: ${method}. Focus: ${bookFocus || 'Comprehensive'}`,
             tools: [{ fileSearch: { fileSearchStoreNames: [ragStoreName] } } as any]
         }
     });
     return {
-        text: response.text || "No relevant information found in the textbooks for this unit.",
+        text: response.text || "No information found in the textbooks.",
         groundingChunks: response.candidates?.[0]?.groundingMetadata?.groundingChunks || [],
     };
 }
 
 export async function generateExampleQuestions(ragStoreName: string): Promise<string[]> {
-    const key = process.env.API_KEY;
-    if (!key) return [];
-    
+    const ai = getAIClient();
     try {
-        const ai = new GoogleGenAI({ apiKey: key });
         const response = await ai.models.generateContent({
             model: 'gemini-3-flash-preview',
-            contents: 'Analyze these textbooks and suggest 3 high-quality study questions.',
+            contents: 'Suggest 3 high-quality study questions based on these materials.',
             config: {
                 tools: [{ fileSearch: { fileSearchStoreNames: [ragStoreName] } } as any],
                 responseMimeType: 'application/json',
                 responseSchema: { type: Type.ARRAY, items: { type: Type.STRING } }
             }
         });
-        const text = response.text || "[]";
-        return JSON.parse(text);
+        return JSON.parse(response.text || "[]");
     } catch (e) { 
-        console.warn("Questions generation failure:", e);
-        return ["What are the core concepts covered in this unit?", "Can you summarize the main findings?", "Explain the relationship between the key terms."]; 
+        return ["What are the core concepts?", "Summarize the key findings.", "Explain the main terminology."]; 
     }
 }
 
 export async function connectLive(callbacks: any, method: string = 'standard'): Promise<any> {
-    const key = process.env.API_KEY;
-    if (!key) throw new Error("API Key missing.");
-    const ai = new GoogleGenAI({ apiKey: key });
-    
+    const ai = getAIClient();
     return ai.live.connect({
         model: 'gemini-2.5-flash-native-audio-preview-12-2025',
         callbacks,
         config: {
             responseModalities: [Modality.AUDIO],
             speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Puck' } } },
-            systemInstruction: `You are an interactive tutor (Method: ${method}). Listen and respond to textbook queries using natural, encouraging language.`,
+            systemInstruction: `You are an interactive tutor (Method: ${method}).`,
             outputAudioTranscription: {},
             inputAudioTranscription: {},
         }

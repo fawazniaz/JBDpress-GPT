@@ -68,23 +68,20 @@ const App: React.FC = () => {
         try {
             const hasKey = await checkApiKey();
             if (!hasKey) {
-                setSyncError("API Key missing. Please click 'Authorize Gemini Access'.");
+                setSyncError("Access Key Required. Please authorize Gemini to continue.");
                 return;
             }
 
             const modules = await geminiService.listAllModules();
             setGlobalTextbooks(modules);
             
-            // Separately try to get raw files for the dashboard
             try {
                 const cloud = await geminiService.listAllCloudFiles();
                 setCloudFiles(cloud);
-            } catch (e) {
-                console.warn("Could not fetch raw cloud files list.");
-            }
+            } catch (e) {}
         } catch (err: any) {
-            console.error("Fetch Library Error:", err);
-            setSyncError(err.message || "Cloud synchronization failed.");
+            console.error("Library sync failed:", err);
+            setSyncError(err.message || "Failed to sync course library.");
         } finally {
             setIsLibraryLoading(false);
             loadingRef.current = false;
@@ -111,7 +108,6 @@ const App: React.FC = () => {
                 setStatus(AppStatus.Login);
             }
         };
-
         init();
     }, [checkApiKey]);
 
@@ -121,29 +117,6 @@ const App: React.FC = () => {
         }
     }, [status, isApiKeySelected, fetchLibrary]);
 
-    const toggleDarkMode = () => {
-        setIsDarkMode(prev => {
-            const newVal = !prev;
-            newVal ? document.documentElement.classList.add('dark') : document.documentElement.classList.remove('dark');
-            localStorage.setItem('theme', newVal ? 'dark' : 'light');
-            return newVal;
-        });
-    };
-
-    const handleError = (err: any, customTitle?: string) => {
-        console.error("App Logic Error:", err);
-        const msg = (err.message || "").toLowerCase();
-        
-        if (msg.includes("403") || msg.includes("401") || msg.includes("permission")) {
-            setSyncError(err.message || "Access Denied: Check API key or Billing.");
-            return;
-        }
-
-        setError(customTitle || "System Error");
-        setTechnicalDetails(err.message || "Unknown error occurred.");
-        setStatus(AppStatus.Error);
-    };
-
     const handleUploadTextbooks = async () => {
         if (!isApiKeySelected && !process.env.API_KEY) {
             alert("Please authorize Gemini access first.");
@@ -151,10 +124,12 @@ const App: React.FC = () => {
         }
         if (files.length === 0) return;
         
+        const moduleLabel = prompt("Enter Module Name (e.g., Biology Unit 1):");
+        if (!moduleLabel) return;
+
         setStatus(AppStatus.Uploading);
         try {
-            const moduleLabel = prompt("Enter Module Name (e.g., Science Grade 4):") || `Module ${new Date().toLocaleDateString()}`;
-            setUploadProgress({ current: 0, total: files.length, message: "Handshaking with Cloud..." });
+            setUploadProgress({ current: 0, total: files.length, message: "Contacting cloud..." });
             
             const ragStoreName = await geminiService.createRagStore(moduleLabel);
             
@@ -163,7 +138,7 @@ const App: React.FC = () => {
                 setUploadProgress({ 
                     current: i, 
                     total: files.length, 
-                    message: `Reading ${file.name}...`, 
+                    message: `Preparing ${file.name}...`, 
                     fileName: file.name 
                 });
                 
@@ -173,13 +148,15 @@ const App: React.FC = () => {
             }
             
             setFiles([]);
-            setUploadProgress({ current: files.length, total: files.length, message: "Finalizing sync...", fileName: "Done!" });
-            await delay(3000); 
+            setUploadProgress({ current: files.length, total: files.length, message: "Refreshing Index...", fileName: "Complete" });
+            await delay(2000); 
             await fetchLibrary(true);
             setStatus(AppStatus.Welcome);
         } catch (err: any) { 
-            handleError(err, "Upload Failure"); 
-            setStatus(AppStatus.Welcome);
+            console.error("Upload failed:", err);
+            setError("Upload Failed");
+            setTechnicalDetails(err.message || "An error occurred during the cloud handshake.");
+            setStatus(AppStatus.Error);
         } finally { 
             setUploadProgress(null); 
         }
@@ -190,17 +167,20 @@ const App: React.FC = () => {
         try {
             await geminiService.deleteRagStore(storeName);
             await fetchLibrary(true);
-        } catch (err: any) { handleError(err, "Delete Error"); }
-        finally { setIsLibraryLoading(false); }
+        } catch (err: any) { 
+            alert(`Delete failed: ${err.message}`);
+        } finally { 
+            setIsLibraryLoading(false); 
+        }
     };
 
-    const handleDeleteRawFile = async (fileName: string) => {
-        setIsLibraryLoading(true);
-        try {
-            await geminiService.deleteRawFile(fileName);
-            await fetchLibrary(true);
-        } catch (err: any) { handleError(err, "Cleanup Error"); }
-        finally { setIsLibraryLoading(false); }
+    const toggleDarkMode = () => {
+        setIsDarkMode(prev => {
+            const newVal = !prev;
+            newVal ? document.documentElement.classList.add('dark') : document.documentElement.classList.remove('dark');
+            localStorage.setItem('theme', newVal ? 'dark' : 'light');
+            return newVal;
+        });
     };
 
     const renderContent = () => {
@@ -246,13 +226,16 @@ const App: React.FC = () => {
                     textbooks={globalTextbooks} 
                     cloudFiles={cloudFiles}
                     onDeleteModule={handleDeleteModule} 
-                    onDeleteRawFile={handleDeleteRawFile}
-                    onPurgeAll={() => {}} // Placeholder
+                    onDeleteRawFile={async (f) => { 
+                        await geminiService.deleteRawFile(f); 
+                        fetchLibrary(true); 
+                    }}
+                    onPurgeAll={() => {}} 
                     onClose={() => setStatus(AppStatus.Welcome)} 
                     onDeepSync={() => fetchLibrary(true)}
                     isSyncing={isLibraryLoading}
                 />;
-            case AppStatus.Uploading: return <ProgressBar progress={uploadProgress?.current || 0} total={uploadProgress?.total || 1} message={uploadProgress?.message || "Initiating..."} fileName={uploadProgress?.fileName} />;
+            case AppStatus.Uploading: return <ProgressBar progress={uploadProgress?.current || 0} total={uploadProgress?.total || 1} message={uploadProgress?.message || "Starting..."} fileName={uploadProgress?.fileName} />;
             case AppStatus.Chatting:
                 return <ChatInterface 
                     user={user!}
@@ -266,8 +249,11 @@ const App: React.FC = () => {
                         try {
                             const res = await geminiService.fileSearch(activeRagStoreName!, msg, m, f, b);
                             setChatHistory(prev => [...prev, { role: 'model', parts: [{ text: res.text }] }]);
-                        } catch (e: any) { handleError(e, "Query Failure"); }
-                        finally { setIsQueryLoading(false); }
+                        } catch (e: any) { 
+                            setChatHistory(prev => [...prev, { role: 'model', parts: [{ text: `Error: ${e.message || "Failed to query the cloud."}` }] }]);
+                        } finally { 
+                            setIsQueryLoading(false); 
+                        }
                     }}
                     addChatMessage={(role, text) => setChatHistory(prev => [...prev, { role, parts: [{ text }] }])}
                     onBack={() => setStatus(AppStatus.Welcome)}
@@ -277,13 +263,10 @@ const App: React.FC = () => {
                 return (
                     <div className="flex flex-col h-screen items-center justify-center p-8 bg-gem-onyx-light dark:bg-gem-onyx-dark text-center">
                         <div className="text-7xl mb-6">⚠️</div>
-                        <h1 className="text-3xl font-black mb-4 text-red-500 uppercase tracking-tighter">{error || "System Alert"}</h1>
+                        <h1 className="text-3xl font-black mb-4 text-red-500 uppercase tracking-tighter">{error || "Connection Error"}</h1>
                         <div className="max-w-xl p-8 bg-white dark:bg-gem-slate-dark rounded-[30px] shadow-2xl border border-gem-mist-light dark:border-gem-mist-dark">
                             <p className="text-sm opacity-70 mb-8 leading-relaxed font-bold">{technicalDetails}</p>
-                            <div className="flex flex-col sm:flex-row gap-4 justify-center">
-                                <button onClick={() => setStatus(AppStatus.AdminDashboard)} className="bg-gem-teal text-white px-8 py-4 rounded-2xl font-black shadow-lg">Storage Manager</button>
-                                <button onClick={() => { setStatus(AppStatus.Welcome); setError(null); setSyncError(null); fetchLibrary(true); }} className="bg-gem-mist-light dark:bg-gem-mist-dark px-8 py-4 rounded-2xl font-black">Retry Home</button>
-                            </div>
+                            <button onClick={() => { setStatus(AppStatus.Welcome); setError(null); fetchLibrary(true); }} className="bg-gem-blue text-white px-8 py-4 rounded-2xl font-black">Retry Connection</button>
                         </div>
                     </div>
                 );
