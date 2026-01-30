@@ -9,7 +9,26 @@ import { QueryResult, TextbookModule, CloudFile } from '../types';
 const STABLE_REGISTRY_KEY = 'JBDPRESS_STABLE_REGISTRY_FINAL';
 
 /**
- * Encodes a Uint8Array to a Base64 string manually to avoid dependencies.
+ * Manual extension-to-mime mapper to ensure API compatibility.
+ */
+function getMimeType(file: File): string {
+    if (file.type && file.type.trim() !== '') return file.type;
+    
+    const ext = file.name.split('.').pop()?.toLowerCase();
+    switch (ext) {
+        case 'pdf': return 'application/pdf';
+        case 'txt': return 'text/plain';
+        case 'doc': return 'application/msword';
+        case 'docx': return 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+        case 'md': return 'text/markdown';
+        case 'csv': return 'text/csv';
+        case 'html': return 'text/html';
+        default: return 'application/octet-stream';
+    }
+}
+
+/**
+ * Encodes a Uint8Array to a Base64 string manually.
  */
 export const encodeBase64 = (b: Uint8Array): string => {
     let binary = '';
@@ -21,7 +40,7 @@ export const encodeBase64 = (b: Uint8Array): string => {
 };
 
 /**
- * Decodes a Base64 string to a Uint8Array manually.
+ * Decodes a Base64 string to a Uint8Array.
  */
 export const decodeBase64 = (s: string): Uint8Array => {
     const binaryString = atob(s);
@@ -49,8 +68,8 @@ function getLocalRepository(): TextbookModule[] {
  */
 function getAIClient() {
     const apiKey = process.env.API_KEY;
-    if (!apiKey || apiKey === '') {
-        throw new Error("API Key is missing. Please authorize access.");
+    if (!apiKey || apiKey.trim() === '') {
+        throw new Error("API Key is missing. Please click 'Authorize Gemini Access' and select a paid project key.");
     }
     return new GoogleGenAI({ apiKey }) as any;
 }
@@ -61,7 +80,6 @@ function getAIClient() {
 export async function listAllModules(): Promise<TextbookModule[]> {
     const ai = getAIClient();
     
-    // Check if the experimental File Search feature is available in this SDK context
     if (!ai.fileSearchStores) {
         console.warn("fileSearchStores API not found in SDK instance.");
         return getLocalRepository();
@@ -71,7 +89,6 @@ export async function listAllModules(): Promise<TextbookModule[]> {
         let allStores: any[] = [];
         let pageToken: string | undefined = undefined;
 
-        // 1. List all stores
         do {
             const cloudResponse: any = await ai.fileSearchStores.list({ pageToken, pageSize: 20 });
             const stores = cloudResponse.fileSearchStores || cloudResponse.stores || [];
@@ -85,7 +102,6 @@ export async function listAllModules(): Promise<TextbookModule[]> {
             return [];
         }
 
-        // 2. Fetch files for each store
         const results: TextbookModule[] = [];
         for (const s of allStores) {
             try {
@@ -110,70 +126,72 @@ export async function listAllModules(): Promise<TextbookModule[]> {
         console.error("Module sync failed:", err);
         const msg = (err.message || "").toLowerCase();
         if (msg.includes("403") || msg.includes("permission_denied")) {
-            throw new Error("Billing/Permission Error: RAG features require a paid Gemini API key.");
+            throw new Error("Billing/Permission Error: This feature requires a Gemini API key from a project with an active billing account.");
         }
         throw err;
     }
 }
 
 /**
- * Creates a new Rag Store (Textbook Module).
+ * Creates a new Rag Store.
  */
 export async function createRagStore(displayName: string): Promise<string> {
     const ai = getAIClient();
-    if (!ai.fileSearchStores) throw new Error("File Search API is not supported by this key/SDK.");
+    if (!ai.fileSearchStores) throw new Error("File Search API is not supported by this SDK version.");
     
     try {
         const ragStore: any = await ai.fileSearchStores.create({ config: { displayName } });
-        if (!ragStore || !ragStore.name) throw new Error("Failed to create store: No ID returned.");
+        if (!ragStore || !ragStore.name) throw new Error("Failed to initialize cloud store.");
         return ragStore.name;
     } catch (err: any) {
         console.error("Store creation error:", err);
-        throw new Error(`Cloud Handshake Failed: ${err.message || 'Unknown API Error'}`);
+        throw new Error(`Cloud Initialization Failed: ${err.message || 'API rejected the request.'}`);
     }
 }
 
 /**
- * Uploads a file to a specific module.
+ * Uploads a file to a specific module with robust mimeType handling.
  */
 export async function uploadToRagStore(ragStoreName: string, file: File, onProgress?: (msg: string) => void): Promise<void> {
     const ai = getAIClient();
     
     try {
-        if (onProgress) onProgress(`Reading ${file.name}...`);
+        const mimeType = getMimeType(file);
+        
+        if (onProgress) onProgress(`Preparing ${file.name}...`);
         const buffer = await file.arrayBuffer();
         const bytes = new Uint8Array(buffer);
         const base64Data = encodeBase64(bytes);
         
-        if (onProgress) onProgress(`Transferring to cloud...`);
+        if (onProgress) onProgress(`Uploading bytes (${mimeType})...`);
 
         const op: any = await ai.fileSearchStores.uploadToFileSearchStore({
             fileSearchStoreName: ragStoreName,
             file: {
                 data: base64Data,
-                mimeType: file.type || 'application/pdf',
+                mimeType: mimeType,
                 displayName: file.name
             }
         });
         
-        if (!op || !op.name) throw new Error("Upload initiation failed: No operation returned.");
+        if (!op || !op.name) throw new Error("Cloud upload rejected the file data.");
 
         let attempts = 0;
-        const maxAttempts = 60;
+        const maxAttempts = 100; // Increased for larger files
         while (attempts < maxAttempts) {
-            if (onProgress) onProgress(`Cloud indexing (${attempts + 1}/${maxAttempts})...`);
-            await delay(4000);
+            if (onProgress) onProgress(`Cloud processing (${attempts + 1}/${maxAttempts})...`);
+            await delay(3000);
             
             const currentOp: any = await ai.operations.get({ name: op.name });
             if (currentOp?.done) {
                 if (currentOp.error) {
-                    throw new Error(currentOp.error.message || "Cloud processing error.");
+                    throw new Error(currentOp.error.message || "The cloud failed to index this document.");
                 }
                 return;
             }
             attempts++;
         }
-        throw new Error("Indexing timed out. The file might still appear shortly.");
+        throw new Error("Indexing is taking longer than expected. Please check back in a minute.");
     } catch (err: any) {
         console.error("Upload Error:", err);
         throw err;
@@ -228,12 +246,12 @@ export async function fileSearch(ragStoreName: string, query: string, method: st
         model: 'gemini-3-flash-preview',
         contents: query,
         config: {
-            systemInstruction: `You are a specialized textbook tutor for JBD Press. Use ONLY the provided textbook context to answer. Method: ${method}. Focus: ${bookFocus || 'Comprehensive'}`,
+            systemInstruction: `You are a specialized textbook tutor for JBD Press. Answer based ONLY on the provided textbook context. Method: ${method}. Focus: ${bookFocus || 'Comprehensive'}`,
             tools: [{ fileSearch: { fileSearchStoreNames: [ragStoreName] } } as any]
         }
     });
     return {
-        text: response.text || "No information found in the textbooks.",
+        text: response.text || "I couldn't find a relevant answer in the textbooks.",
         groundingChunks: response.candidates?.[0]?.groundingMetadata?.groundingChunks || [],
     };
 }
@@ -252,7 +270,7 @@ export async function generateExampleQuestions(ragStoreName: string): Promise<st
         });
         return JSON.parse(response.text || "[]");
     } catch (e) { 
-        return ["What are the core concepts?", "Summarize the key findings.", "Explain the main terminology."]; 
+        return ["Can you summarize the main themes?", "What are the key terms introduced?", "How does this relate to previous units?"]; 
     }
 }
 
@@ -264,7 +282,7 @@ export async function connectLive(callbacks: any, method: string = 'standard'): 
         config: {
             responseModalities: [Modality.AUDIO],
             speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Puck' } } },
-            systemInstruction: `You are an interactive tutor (Method: ${method}).`,
+            systemInstruction: `You are an interactive tutor (Method: ${method}). Help the student learn from their textbooks.`,
             outputAudioTranscription: {},
             inputAudioTranscription: {},
         }
