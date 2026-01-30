@@ -46,16 +46,52 @@ const App: React.FC = () => {
 
     const loadingRef = useRef(false);
 
-    useEffect(() => {
-        const checkApiKey = async () => {
-            if (window.aistudio?.hasSelectedApiKey) {
-                const hasKey = await window.aistudio.hasSelectedApiKey();
-                setIsApiKeySelected(hasKey || (!!process.env.API_KEY && process.env.API_KEY !== ''));
-            } else if (process.env.API_KEY && process.env.API_KEY !== '') {
-                setIsApiKeySelected(true);
-            }
-        };
+    const checkApiKey = useCallback(async () => {
+        if (window.aistudio?.hasSelectedApiKey) {
+            const hasKey = await window.aistudio.hasSelectedApiKey();
+            const exists = hasKey || (!!process.env.API_KEY && process.env.API_KEY !== '');
+            setIsApiKeySelected(exists);
+            return exists;
+        } else if (process.env.API_KEY && process.env.API_KEY !== '') {
+            setIsApiKeySelected(true);
+            return true;
+        }
+        return false;
+    }, []);
 
+    const fetchLibrary = useCallback(async (force: boolean = false) => {
+        if (loadingRef.current && !force) return;
+        loadingRef.current = true;
+        setIsLibraryLoading(true);
+        setSyncError(null);
+        
+        try {
+            const hasKey = await checkApiKey();
+            if (!hasKey) {
+                setSyncError("API Key missing. Please click 'Authorize Gemini Access'.");
+                return;
+            }
+
+            const modules = await geminiService.listAllModules();
+            setGlobalTextbooks(modules);
+            
+            // Separately try to get raw files for the dashboard
+            try {
+                const cloud = await geminiService.listAllCloudFiles();
+                setCloudFiles(cloud);
+            } catch (e) {
+                console.warn("Could not fetch raw cloud files list.");
+            }
+        } catch (err: any) {
+            console.error("Fetch Library Error:", err);
+            setSyncError(err.message || "Cloud synchronization failed.");
+        } finally {
+            setIsLibraryLoading(false);
+            loadingRef.current = false;
+        }
+    }, [checkApiKey]);
+
+    useEffect(() => {
         const init = async () => {
             const savedTheme = localStorage.getItem('theme');
             if (savedTheme === 'dark') {
@@ -77,39 +113,12 @@ const App: React.FC = () => {
         };
 
         init();
-    }, []);
-
-    const fetchLibrary = useCallback(async (force: boolean = false) => {
-        if (loadingRef.current && !force) return;
-        loadingRef.current = true;
-        setIsLibraryLoading(true);
-        setSyncError(null);
-        
-        try {
-            const results = await Promise.allSettled([
-                geminiService.listAllModules(),
-                geminiService.listAllCloudFiles()
-            ]);
-
-            if (results[0].status === 'fulfilled') {
-                setGlobalTextbooks(results[0].value);
-            } else {
-                setSyncError(results[0].reason?.message || "Cloud modules unavailable.");
-            }
-
-            if (results[1].status === 'fulfilled') {
-                setCloudFiles(results[1].value);
-            }
-        } catch (err: any) {
-            setSyncError(err.message || "Cloud synchronization failed.");
-        } finally {
-            setIsLibraryLoading(false);
-            loadingRef.current = false;
-        }
-    }, []);
+    }, [checkApiKey]);
 
     useEffect(() => {
-        if (status === AppStatus.Welcome && isApiKeySelected) fetchLibrary();
+        if (status === AppStatus.Welcome && isApiKeySelected) {
+            fetchLibrary();
+        }
     }, [status, isApiKeySelected, fetchLibrary]);
 
     const toggleDarkMode = () => {
@@ -122,11 +131,11 @@ const App: React.FC = () => {
     };
 
     const handleError = (err: any, customTitle?: string) => {
-        console.error("Critical Error Detected:", err);
+        console.error("App Logic Error:", err);
         const msg = (err.message || "").toLowerCase();
         
-        if (msg.includes("403") || msg.includes("401")) {
-            setSyncError("Access Denied: Please check API key/billing.");
+        if (msg.includes("403") || msg.includes("401") || msg.includes("permission")) {
+            setSyncError(err.message || "Access Denied: Check API key or Billing.");
             return;
         }
 
@@ -154,7 +163,7 @@ const App: React.FC = () => {
                 setUploadProgress({ 
                     current: i, 
                     total: files.length, 
-                    message: `Processing ${file.name}...`, 
+                    message: `Reading ${file.name}...`, 
                     fileName: file.name 
                 });
                 
@@ -164,8 +173,8 @@ const App: React.FC = () => {
             }
             
             setFiles([]);
-            setUploadProgress({ current: files.length, total: files.length, message: "Syncing library index...", fileName: "Finalizing..." });
-            await delay(4000); 
+            setUploadProgress({ current: files.length, total: files.length, message: "Finalizing sync...", fileName: "Done!" });
+            await delay(3000); 
             await fetchLibrary(true);
             setStatus(AppStatus.Welcome);
         } catch (err: any) { 
@@ -225,6 +234,7 @@ const App: React.FC = () => {
                         if (window.aistudio?.openSelectKey) { 
                             await window.aistudio.openSelectKey(); 
                             setIsApiKeySelected(true);
+                            fetchLibrary(true);
                         } 
                     }}
                     toggleDarkMode={toggleDarkMode}
@@ -242,7 +252,7 @@ const App: React.FC = () => {
                     onDeepSync={() => fetchLibrary(true)}
                     isSyncing={isLibraryLoading}
                 />;
-            case AppStatus.Uploading: return <ProgressBar progress={uploadProgress?.current || 0} total={uploadProgress?.total || 1} message={uploadProgress?.message || "Uploading..."} fileName={uploadProgress?.fileName} />;
+            case AppStatus.Uploading: return <ProgressBar progress={uploadProgress?.current || 0} total={uploadProgress?.total || 1} message={uploadProgress?.message || "Initiating..."} fileName={uploadProgress?.fileName} />;
             case AppStatus.Chatting:
                 return <ChatInterface 
                     user={user!}

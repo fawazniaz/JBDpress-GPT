@@ -42,7 +42,10 @@ export const decodeBase64 = (s: string) => {
  * Fetches all raw files in the project.
  */
 export async function listAllCloudFiles(): Promise<CloudFile[]> {
-    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY }) as any;
+    const key = process.env.API_KEY;
+    if (!key) return [];
+    
+    const ai = new GoogleGenAI({ apiKey: key }) as any;
     if (!ai.files) return [];
     
     let allFiles: CloudFile[] = [];
@@ -55,7 +58,7 @@ export async function listAllCloudFiles(): Promise<CloudFile[]> {
                 allFiles = [...allFiles, ...res.files];
             }
             pageToken = res.nextPageToken;
-            if (pageToken) await delay(800);
+            if (pageToken) await delay(500);
         } while (pageToken);
         
         return allFiles;
@@ -66,7 +69,9 @@ export async function listAllCloudFiles(): Promise<CloudFile[]> {
 }
 
 export async function deleteRawFile(fileName: string): Promise<void> {
-    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY }) as any;
+    const key = process.env.API_KEY;
+    if (!key) return;
+    const ai = new GoogleGenAI({ apiKey: key }) as any;
     if (!ai.files) return;
     await ai.files.delete({ name: fileName });
 }
@@ -75,25 +80,27 @@ export async function deleteRawFile(fileName: string): Promise<void> {
  * Fetches all modules and their file lists.
  */
 export async function listAllModules(): Promise<TextbookModule[]> {
+    const key = process.env.API_KEY;
     const localData = getLocalRepository();
-    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY }) as any;
     
-    if (!process.env.API_KEY) {
-        throw new Error("API Key is missing. Please authorize Gemini access.");
+    if (!key || key.trim() === '') {
+        throw new Error("No API Key detected. Please use the 'Authorize' button.");
     }
 
+    const ai = new GoogleGenAI({ apiKey: key }) as any;
     if (!ai.fileSearchStores) return localData;
 
-    let allStores: any[] = [];
-    let pageToken: string | undefined = undefined;
-
     try {
+        console.debug("Attempting to list File Search Stores...");
+        let allStores: any[] = [];
+        let pageToken: string | undefined = undefined;
+
         do {
             const cloudResponse: any = await ai.fileSearchStores.list({ pageToken, pageSize: 20 });
             const stores = cloudResponse.fileSearchStores || cloudResponse.stores || [];
             allStores = [...allStores, ...stores];
             pageToken = cloudResponse.nextPageToken;
-            if (pageToken) await delay(800);
+            if (pageToken) await delay(500);
         } while (pageToken);
 
         const results: TextbookModule[] = [];
@@ -111,84 +118,96 @@ export async function listAllModules(): Promise<TextbookModule[]> {
             } catch (e) {
                 results.push({ name: s.displayName || s.name, storeName: s.name, books: [] });
             }
-            await delay(400); 
         }
 
         if (results.length > 0) {
             localStorage.setItem(STABLE_REGISTRY_KEY, JSON.stringify(results));
             return results;
         }
-        return localData;
+        
+        // If we reached here, the call succeeded but returned 0 stores.
+        localStorage.setItem(STABLE_REGISTRY_KEY, '[]');
+        return [];
     } catch (err: any) {
-        console.error("Module list retrieval failure:", err);
-        const msg = err.message || "";
-        if (msg.includes("403") || msg.includes("401")) {
-            throw new Error("Cloud Permission Denied: Your API key might not have File Search (RAG) enabled or needs billing.");
+        console.error("Critical error listing modules:", err);
+        const msg = (err.message || "").toLowerCase();
+        if (msg.includes("403") || msg.includes("permission_denied")) {
+            throw new Error("Permission Denied: Ensure your API Key is from a project with billing enabled for File Search (RAG).");
         }
+        if (msg.includes("401") || msg.includes("unauthenticated")) {
+            throw new Error("Invalid API Key: Please refresh your key and try again.");
+        }
+        // Fallback to local data if it's a transient network error
         return localData;
     }
 }
 
 export async function createRagStore(displayName: string): Promise<string> {
-    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY }) as any;
+    const key = process.env.API_KEY;
+    if (!key) throw new Error("API Key missing.");
+    
+    const ai = new GoogleGenAI({ apiKey: key }) as any;
     try {
+        console.debug("Creating Rag Store:", displayName);
         const ragStore: any = await ai.fileSearchStores.create({ config: { displayName } });
-        if (!ragStore || !ragStore.name) throw new Error("Cloud creation failed.");
+        if (!ragStore || !ragStore.name) throw new Error("Handshake failed: No store name returned.");
         return ragStore.name;
     } catch (err: any) {
-        const msg = (err.message || "").toLowerCase();
-        if (msg.includes('403') || msg.includes('permission_denied') || msg.includes('unauthenticated')) {
-            throw new Error("Billing required: File Search Stores (RAG) require a paid API key from a project with billing enabled.");
-        }
+        console.error("Store creation error:", err);
         throw err;
     }
 }
 
 export async function uploadToRagStore(ragStoreName: string, file: File, onProgress?: (msg: string) => void): Promise<void> {
-    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY }) as any;
+    const key = process.env.API_KEY;
+    if (!key) throw new Error("API Key missing.");
+    
+    const ai = new GoogleGenAI({ apiKey: key }) as any;
     
     try {
-        if (onProgress) onProgress(`Reading ${file.name}...`);
+        if (onProgress) onProgress(`Reading ${file.name} bytes...`);
         const buffer = await file.arrayBuffer();
         const bytes = new Uint8Array(buffer);
-        const base64Data = encodeBase64(bytes);
         
-        if (onProgress) onProgress(`Transferring bytes to cloud...`);
+        if (onProgress) onProgress(`Transferring to cloud...`);
 
+        // Use raw bytes (Uint8Array) for the data field
         const op: any = await ai.fileSearchStores.uploadToFileSearchStore({
             fileSearchStoreName: ragStoreName,
             file: {
-                data: base64Data,
+                data: bytes,
                 mimeType: file.type || 'application/pdf',
                 displayName: file.name
             }
         });
         
-        if (!op || !op.name) throw new Error("Cloud handshake failed.");
+        if (!op || !op.name) throw new Error("Cloud upload initiation failed.");
 
         let attempts = 0;
         while (attempts < 60) {
-            if (onProgress) onProgress(`Cloud indexing ${file.name} (${attempts+1}/60)...`);
+            if (onProgress) onProgress(`Cloud indexing (${attempts + 1}/60)...`);
             await delay(4000);
             
             const currentOp: any = await ai.operations.get({ name: op.name });
             if (currentOp?.done) {
                 if (currentOp.error) {
-                    throw new Error(currentOp.error.message || "File processing error.");
+                    throw new Error(currentOp.error.message || "Cloud processing error.");
                 }
                 return;
             }
             attempts++;
         }
-        throw new Error("Cloud processing timed out. The file should appear shortly.");
+        throw new Error("Cloud indexing timed out.");
     } catch (err: any) {
-        console.error("Upload Error:", err);
+        console.error("RAG Upload Error:", err);
         throw err;
     }
 }
 
 export async function deleteRagStore(storeName: string): Promise<void> {
-    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY }) as any;
+    const key = process.env.API_KEY;
+    if (!key) return;
+    const ai = new GoogleGenAI({ apiKey: key }) as any;
     try {
         await ai.fileSearchStores.delete({ fileSearchStoreName: storeName });
     } catch (e) {
@@ -199,7 +218,10 @@ export async function deleteRagStore(storeName: string): Promise<void> {
 }
 
 export async function fileSearch(ragStoreName: string, query: string, method: string = 'standard', useFastMode: boolean = false, bookFocus?: string): Promise<QueryResult> {
-    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+    const key = process.env.API_KEY;
+    if (!key) throw new Error("API Key missing.");
+    const ai = new GoogleGenAI({ apiKey: key });
+    
     const response: GenerateContentResponse = await ai.models.generateContent({
         model: 'gemini-3-flash-preview',
         contents: query,
@@ -215,8 +237,11 @@ export async function fileSearch(ragStoreName: string, query: string, method: st
 }
 
 export async function generateExampleQuestions(ragStoreName: string): Promise<string[]> {
+    const key = process.env.API_KEY;
+    if (!key) return [];
+    
     try {
-        const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+        const ai = new GoogleGenAI({ apiKey: key });
         const response = await ai.models.generateContent({
             model: 'gemini-3-flash-preview',
             contents: 'Analyze these textbooks and suggest 3 high-quality study questions.',
@@ -235,7 +260,10 @@ export async function generateExampleQuestions(ragStoreName: string): Promise<st
 }
 
 export async function connectLive(callbacks: any, method: string = 'standard'): Promise<any> {
-    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+    const key = process.env.API_KEY;
+    if (!key) throw new Error("API Key missing.");
+    const ai = new GoogleGenAI({ apiKey: key });
+    
     return ai.live.connect({
         model: 'gemini-2.5-flash-native-audio-preview-12-2025',
         callbacks,
